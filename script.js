@@ -39,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
         handStatus: document.getElementById('hand-status'),
         videoContainer: document.querySelector('.video-container'),
         wordContainer: document.getElementById('word-container'),
+        wordImage: document.getElementById('word-image'),
         feedback: document.getElementById('feedback'),
         startScreenTitle: document.getElementById('start-screen-title'),
         startScreenDescription: document.getElementById('start-screen-description'),
@@ -217,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`Network request failed with status: ${response.status}`);
             }
             const data = await response.json();
-            const words = data.map(row => row.Word?.toUpperCase()).filter(word => word && word.length > 1);
+            const words = data.map(row => ({ word: row.Word?.toUpperCase(), picture: row.Picture })).filter(item => item.word && item.word.length > 1);
 
             // If fetch is successful, update localStorage for future offline use.
             try {
@@ -252,7 +253,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (localWords[sheetName]) {
                     console.log(`Successfully loaded words for ${sheetName} from local 'words.json'.`);
-                    const words = localWords[sheetName].map(row => row.Word?.toUpperCase()).filter(word => word && word.length > 1);
+                    const words = localWords[sheetName].map(row => ({ word: row.Word?.toUpperCase(), picture: row.Picture })).filter(item => item.word && item.word.length > 1);
 
                     // Attempt to warm up localStorage for the next offline session
                     try {
@@ -274,7 +275,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    const generateQuestionData = (word) => {
+    const generateQuestionData = (wordData) => {
+        const word = wordData.word;
         const missingIndex = Math.floor(Math.random() * (word.length - 2)) + 1;
         const correctLetter = word[missingIndex];
         const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -290,6 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
             missingIndex,
             correctLetter,
             options: shuffleArray([correctLetter, ...incorrectLetters]),
+            picture: wordData.picture
         };
     };
 
@@ -355,6 +358,14 @@ document.addEventListener('DOMContentLoaded', () => {
         state.currentWord = question.word;
         state.correctLetter = question.correctLetter;
         state.waitingForNextQuestion = false;
+
+        if (question.picture) {
+            ui.wordImage.src = question.picture;
+            ui.wordImage.style.display = 'block';
+        } else {
+            ui.wordImage.src = '';
+            ui.wordImage.style.display = 'none';
+        }
 
         displayWord(question.word, question.missingIndex);
         createLetterBubbles(question.options);
@@ -463,6 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.gameActive = false;
         state.letterBubbles = [];
         ui.wordContainer.innerHTML = '';
+        ui.wordImage.style.display = 'none';
         ui.feedback.textContent = '';
         ui.mainMenuBtn.style.display = 'none';
         
