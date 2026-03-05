@@ -25,8 +25,14 @@
                 <div class="question-counter">Question: <span id="question-counter">0/X</span></div>
             </div>
 
+            <div class="timer-container">
+                <div class="timer">Time: <span id="timer">0s</span></div>
+            </div>
+
             <div class="word-display">
-                <img id="word-image" src="" alt="Word to spell" style="display: none; max-width: 80%; height: auto; margin-bottom: 10px; border-radius: 10px;">
+                <div id="image-placeholder" style="display: none;">
+                    <img id="word-image" src="" alt="Word to spell">
+                </div>
                 <div class="word-container" id="word-container">
                     </div>
             </div>
@@ -47,6 +53,11 @@
                 <div class="level-input-container">
                     <input type="text" id="sheet-name-input" placeholder="Enter Custom Sheet Tab Name" aria-label="Enter Sheet Tab Name">
                     <button class="btn" id="go-btn">Go!</button>
+                </div>
+                <div class="timer-selection-container">
+                    <button class="btn timer-btn" id="stopwatch-btn">Stopwatch</button>
+                    <button class="btn timer-btn" id="countdown-btn">Countdown</button>
+                    <button class="btn timer-btn active" id="no-timer-btn">No Timer</button>
                 </div>
                 <div class="volume-controls">
                     <div class="volume-slider-container">

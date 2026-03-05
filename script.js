@@ -3,7 +3,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- 1. CONFIGURATION ---
     const GOOGLE_SHEET_ID = '1ZMEfBGZQHGf-UVvNJj8D7cOhQ3M2Z2cYNBrNMT4pnn0';
     const BASE_OPENSHEET_URL = `https://opensheet.elk.sh/${GOOGLE_SHEET_ID}/`;
-    const AVAILABLE_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6"];
+    const AVAILABLE_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "The Password"];
+    const COUNTDOWN_TIME = 60; // seconds
     const MEDIAPIPE_HANDS_CONFIG = {
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1635986972/${file}`
     };
@@ -22,6 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx: document.getElementById('output-canvas').getContext('2d'),
         score: document.getElementById('score'),
         questionCounter: document.getElementById('question-counter'),
+        timer: document.getElementById('timer'),
+        timerContainer: document.querySelector('.timer-container'),
         cameraPermissionScreen: document.getElementById('camera-permission'),
         levelSelectionScreen: document.getElementById('level-selection-screen'),
         startScreen: document.getElementById('start-screen'),
@@ -32,6 +35,9 @@ document.addEventListener('DOMContentLoaded', () => {
         sheetNameInput: document.getElementById('sheet-name-input'),
         goBtn: document.getElementById('go-btn'),
         levelButtonsContainer: document.getElementById('level-buttons-container'),
+        stopwatchBtn: document.getElementById('stopwatch-btn'),
+        countdownBtn: document.getElementById('countdown-btn'),
+        noTimerBtn: document.getElementById('no-timer-btn'),
         mainMenuBtn: document.getElementById('main-menu-btn'),
         bgmVolumeSlider: document.getElementById('bgm-volume'),
         sfxVolumeSlider: document.getElementById('sfx-volume'),
@@ -39,6 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
         handStatus: document.getElementById('hand-status'),
         videoContainer: document.querySelector('.video-container'),
         wordContainer: document.getElementById('word-container'),
+        imagePlaceholder: document.getElementById('image-placeholder'),
         wordImage: document.getElementById('word-image'),
         feedback: document.getElementById('feedback'),
         startScreenTitle: document.getElementById('start-screen-title'),
@@ -69,6 +76,9 @@ document.addEventListener('DOMContentLoaded', () => {
         selectedQuestions: [],
         waitingForNextQuestion: false,
         selectedLevelName: '',
+        timerMode: 'none', // 'none', 'stopwatch', 'countdown'
+        timerValue: 0,
+        timerInterval: null,
         deferredInstallPrompt: null,
         isInstallable: false,
     };
@@ -296,7 +306,51 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     };
 
-    // --- 5d. Camera & MediaPipe ---
+    // --- 5d. Timer Functions ---
+    const formatTime = (seconds) => {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+    };
+
+    const updateTimerDisplay = () => {
+        if (state.timerMode === 'countdown') {
+            ui.timer.textContent = formatTime(state.timerValue);
+        } else {
+            ui.timer.textContent = `${state.timerValue}s`;
+        }
+    };
+
+    const startTimer = () => {
+        if (state.timerMode === 'none' || state.timerInterval) return;
+
+        ui.timerContainer.style.display = 'block';
+        
+        state.timerInterval = setInterval(() => {
+            if (state.timerMode === 'stopwatch') {
+                state.timerValue++;
+            } else if (state.timerMode === 'countdown') {
+                state.timerValue--;
+                if (state.timerValue <= 0) {
+                    endGame();
+                }
+            }
+            updateTimerDisplay();
+        }, 1000);
+    };
+
+    const stopTimer = () => {
+        clearInterval(state.timerInterval);
+        state.timerInterval = null;
+    };
+
+    const resetTimer = () => {
+        stopTimer();
+        state.timerValue = state.timerMode === 'countdown' ? COUNTDOWN_TIME : 0;
+        updateTimerDisplay();
+    };
+
+    // --- 5e. Camera & MediaPipe ---
     const initCamera = async () => {
         if (state.cameraInitialized) return;
         initializeAudio();
@@ -353,21 +407,30 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.restore();
     }
     
-    // --- 5e. Game Logic ---
+    // --- 5f. Game Logic ---
     const loadQuestion = (question) => {
         state.currentWord = question.word;
         state.correctLetter = question.correctLetter;
         state.waitingForNextQuestion = false;
-
-        if (question.picture) {
-            ui.wordImage.src = question.picture;
-            ui.wordImage.style.display = 'block';
-        } else {
-            ui.wordImage.src = '';
-            ui.wordImage.style.display = 'none';
-        }
-
+        
         displayWord(question.word, question.missingIndex);
+    
+        if (question.picture) {
+            const wordContainerHeight = ui.wordContainer.offsetHeight;
+            ui.imagePlaceholder.style.height = `${wordContainerHeight * 1.5}px`;
+            ui.imagePlaceholder.style.width = `${ui.wordContainer.offsetWidth}px`;
+            ui.imagePlaceholder.style.display = 'flex';
+            
+            ui.wordImage.style.display = 'none'; // Hide image until it's loaded
+            ui.wordImage.src = question.picture;
+            ui.wordImage.onload = () => {
+                ui.wordImage.style.display = 'block';
+            };
+        } else {
+            ui.imagePlaceholder.style.display = 'none';
+            ui.wordImage.src = '';
+        }
+    
         createLetterBubbles(question.options);
         ui.questionCounter.textContent = `${state.currentQuestionIndex + 1}/${state.selectedQuestions.length}`;
     };
@@ -447,6 +510,9 @@ document.addEventListener('DOMContentLoaded', () => {
         state.gameActive = true;
         ui.score.textContent = state.score;
         ui.mainMenuBtn.style.display = 'block';
+        
+        resetTimer();
+        startTimer();
 
         showScreen(null); // Hide all major screens
         loadQuestion(state.selectedQuestions[0]);
@@ -454,6 +520,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const endGame = () => {
         state.gameActive = false;
+        stopTimer();
         ui.finalScore.textContent = state.score;
         document.querySelector('#game-over p').innerHTML = `Your score: <span id="final-score">${state.score}</span>/${state.selectedQuestions.length}`;
         showScreen(ui.gameOverScreen);
@@ -474,9 +541,12 @@ document.addEventListener('DOMContentLoaded', () => {
         state.gameActive = false;
         state.letterBubbles = [];
         ui.wordContainer.innerHTML = '';
+        ui.imagePlaceholder.style.display = 'none';
         ui.wordImage.style.display = 'none';
         ui.feedback.textContent = '';
         ui.mainMenuBtn.style.display = 'none';
+        ui.timerContainer.style.display = 'none';
+        resetTimer();
         
         // Populate level buttons
         ui.levelButtonsContainer.innerHTML = '';
@@ -507,6 +577,19 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         ui.goBtn.addEventListener('click', handleCustomLevel);
         ui.sheetNameInput.addEventListener('keypress', (e) => e.key === 'Enter' && handleCustomLevel());
+
+        [ui.stopwatchBtn, ui.countdownBtn, ui.noTimerBtn].forEach(btn => {
+            btn.addEventListener('click', () => {
+                playSound(audio.buttonClick);
+                let mode = btn.id.replace('-btn', '');
+                if (mode === 'no-timer') mode = 'none';
+                state.timerMode = mode;
+
+                ui.stopwatchBtn.classList.toggle('active', state.timerMode === 'stopwatch');
+                ui.countdownBtn.classList.toggle('active', state.timerMode === 'countdown');
+                ui.noTimerBtn.classList.toggle('active', state.timerMode === 'none');
+            });
+        });
         
         ui.bgmVolumeSlider.addEventListener('input', (e) => audio.backgroundMusic.volume = e.target.value);
         ui.sfxVolumeSlider.addEventListener('input', (e) => setSfxVolume(e.target.value));
