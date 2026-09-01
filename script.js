@@ -8,9 +8,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
     const SUPER_SENTENCE_LISTS_KEY = 'popar_super_sentence_lists';
     const WORD_POWER_DWELL_MS = 3000; // how long to hold a lane to confirm the answer
-    const COUNTDOWN_TIME = 60; // seconds
+    const DEFAULT_COUNTDOWN_SECONDS = 60; // default quiz-timer countdown length
     const READY_COUNTDOWN_STEPS = [3, 2, 1];
     const READY_COUNTDOWN_STEP_MS = 700;
+    const OBSTACLE_SPAWN_BASE_MS = 2600; // Stay in Lane: average time between falling rocks
+    const OBSTACLE_SPAWN_JITTER_MS = 1200;
+    const OBSTACLE_FALL_RATIO_PER_SEC = 0.22; // fraction of canvas height fallen per second
+    const OBSTACLE_HIT_ZONE_RATIO = 0.8; // rock becomes "live" for hit-detection past this y fraction
     const WASM_PATH = './mediapipe/wasm';
     const HAND_MODEL_PATH = './models/hand_landmarker.task';
     const POSE_MODEL_PATH = './models/pose_landmarker_lite.task';
@@ -56,6 +60,12 @@ document.addEventListener('DOMContentLoaded', () => {
         easyModeBtn: document.getElementById('easy-mode-btn'),
         hardModeBtn: document.getElementById('hard-mode-btn'),
         difficultySettingsSection: document.getElementById('difficulty-settings-section'),
+        bubbleMovementSettingsSection: document.getElementById('bubble-movement-settings-section'),
+        bubblesRoamBtn: document.getElementById('bubbles-roam-btn'),
+        bubblesStillBtn: document.getElementById('bubbles-still-btn'),
+        obstacleSettingsSection: document.getElementById('obstacle-settings-section'),
+        obstaclesOnBtn: document.getElementById('obstacles-on-btn'),
+        obstaclesOffBtn: document.getElementById('obstacles-off-btn'),
         modePointAndPopBtn: document.getElementById('mode-point-and-pop-btn'),
         modeStayInLaneBtn: document.getElementById('mode-stay-in-lane-btn'),
         gameModeHint: document.getElementById('game-mode-hint'),
@@ -78,6 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
         backToLevelsFromSentenceBtn: document.getElementById('back-to-levels-from-sentence-btn'),
         stopwatchBtn: document.getElementById('stopwatch-btn'),
         countdownBtn: document.getElementById('countdown-btn'),
+        countdownDurationInput: document.getElementById('countdown-duration-input'),
         noTimerBtn: document.getElementById('no-timer-btn'),
         mainMenuBtn: document.getElementById('main-menu-btn'),
         bgmVolumeSlider: document.getElementById('bgm-volume'),
@@ -95,13 +106,246 @@ document.addEventListener('DOMContentLoaded', () => {
         installButton: document.getElementById('install-button'),
     };
 
-    // --- 3. AUDIO ELEMENTS ---
+    // --- 3. AUDIO ---
+    // Every sound in the game — short effects AND the background music — is synthesized
+    // live with the Web Audio API. No MP3 files at all.
     const audio = {
-        backgroundMusic: document.getElementById('backgroundMusic'),
-        buttonClick: document.getElementById('buttonClickSound'),
-        popBubble: document.getElementById('popBubbleSound'),
-        correctAnswer: document.getElementById('correctAnswerSound'),
-        wrongAnswer: document.getElementById('wrongAnswerSound'),
+        buttonClick: 'click',
+        popBubble: 'pop',
+        correctAnswer: 'correct',
+        wrongAnswer: 'wrong',
+    };
+
+    let audioCtx = null;
+    let sfxMasterGain = null;
+    let masterCompressor = null;
+
+    const ensureAudioContext = () => {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+            // A gentle compressor lets individual sounds be mixed louder without
+            // harsh clipping when a few of them overlap (e.g. correct-answer's notes).
+            masterCompressor = audioCtx.createDynamicsCompressor();
+            masterCompressor.threshold.value = -10;
+            masterCompressor.knee.value = 12;
+            masterCompressor.ratio.value = 6;
+            masterCompressor.attack.value = 0.003;
+            masterCompressor.release.value = 0.18;
+            masterCompressor.connect(audioCtx.destination);
+
+            sfxMasterGain = audioCtx.createGain();
+            sfxMasterGain.gain.value = state.sfxVolume;
+            sfxMasterGain.connect(masterCompressor);
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+        }
+        return audioCtx;
+    };
+
+    const playTone = ({ freq, endFreq, type = 'sine', duration = 0.15, gain = 0.5, delay = 0, destination }) => {
+        const ctx = ensureAudioContext();
+        const t0 = ctx.currentTime + delay;
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, t0);
+        if (endFreq) {
+            osc.frequency.exponentialRampToValueAtTime(Math.max(endFreq, 1), t0 + duration);
+        }
+        g.gain.setValueAtTime(gain, t0);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+        osc.connect(g);
+        g.connect(destination || sfxMasterGain);
+        osc.start(t0);
+        osc.stop(t0 + duration + 0.03);
+    };
+
+    const playNoiseBurst = ({ duration = 0.12, gain = 0.4, filterFreq = 900, delay = 0 }) => {
+        const ctx = ensureAudioContext();
+        const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * duration));
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+        }
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = filterFreq;
+        const g = ctx.createGain();
+        const t0 = ctx.currentTime + delay;
+        g.gain.setValueAtTime(gain, t0);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+        noise.connect(filter);
+        filter.connect(g);
+        g.connect(sfxMasterGain);
+        noise.start(t0);
+    };
+
+    const playClickSound = () => {
+        playTone({ freq: 760, endFreq: 500, type: 'triangle', duration: 0.07, gain: 0.5 });
+    };
+
+    const playPopSound = () => {
+        playTone({ freq: 700, endFreq: 170, type: 'sine', duration: 0.13, gain: 0.6 });
+        playNoiseBurst({ duration: 0.05, gain: 0.15, filterFreq: 1800 });
+    };
+
+    const playCorrectSound = () => {
+        // A cheerful little ascending arpeggio: C5, E5, G5, C6.
+        [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+            playTone({ freq, type: 'triangle', duration: 0.18, gain: 0.45, delay: i * 0.08 });
+        });
+    };
+
+    const playWrongSound = () => {
+        playTone({ freq: 320, endFreq: 140, type: 'sawtooth', duration: 0.28, gain: 0.4 });
+    };
+
+    const playHitSound = () => {
+        playNoiseBurst({ duration: 0.16, gain: 0.6, filterFreq: 700 });
+        playTone({ freq: 220, endFreq: 70, type: 'sawtooth', duration: 0.2, gain: 0.55 });
+    };
+
+    const playCountdownBeepSound = () => {
+        playTone({ freq: 440, type: 'sine', duration: 0.11, gain: 0.4 });
+    };
+
+    const playCountdownGoSound = () => {
+        playTone({ freq: 660, endFreq: 990, type: 'triangle', duration: 0.24, gain: 0.55 });
+    };
+
+    const playGameOverSound = () => {
+        // A little finishing flourish, longer and grander than the plain correct-answer chime.
+        [523.25, 659.25, 783.99, 659.25, 1046.5].forEach((freq, i) => {
+            playTone({ freq, type: 'triangle', duration: 0.22, gain: 0.4, delay: i * 0.11 });
+        });
+    };
+
+    const playSaveSound = () => {
+        playTone({ freq: 700, endFreq: 1000, type: 'sine', duration: 0.14, gain: 0.4 });
+    };
+
+    // --- 3b. Background music: a bouncy, procedurally-generated, seamlessly-looping tune ---
+    const BGM_TEMPO_BPM = 132;
+    const BGM_BEAT_SEC = 60 / BGM_TEMPO_BPM; // one quarter note
+    const BGM_STEP_SEC = BGM_BEAT_SEC / 2; // one eighth note — the tune's smallest subdivision
+    // A bright, playful I - V - vi - IV progression (C - G - Am - F), one bar each.
+    const BGM_CHORDS = [
+        { root: 130.81, third: 164.81, fifth: 196.00 }, // C major
+        { root: 196.00, third: 246.94, fifth: 293.66 }, // G major
+        { root: 110.00, third: 130.81, fifth: 164.81 }, // A minor
+        { root: 174.61, third: 220.00, fifth: 261.63 }, // F major
+    ];
+    // A skippy little top-line, 8 eighth-notes per bar. `null` = a rest, which is what
+    // gives the tune its bounce instead of playing dead straight.
+    const BGM_ARP_PATTERN = ['root', null, 'fifth', 'third', 'root8', 'fifth', 'third', null];
+    const BGM_SCHEDULE_AHEAD_SEC = 0.3;
+    const BGM_LOOKAHEAD_MS = 60;
+
+    let bgmGain = null;
+    let bgmPlaying = false;
+    let bgmSchedulerId = null;
+    let bgmNextStepTime = 0;
+    let bgmStepIndex = 0;
+
+    const scheduleBgmBassNote = (freq, time, dur) => {
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, time);
+        g.gain.exponentialRampToValueAtTime(0.11, time + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+        osc.connect(g);
+        g.connect(bgmGain);
+        osc.start(time);
+        osc.stop(time + dur + 0.05);
+    };
+
+    const scheduleBgmArpNote = (freq, time, dur) => {
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, time);
+        g.gain.exponentialRampToValueAtTime(0.13, time + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+        osc.connect(g);
+        g.connect(bgmGain);
+        osc.start(time);
+        osc.stop(time + dur + 0.05);
+    };
+
+    const scheduleBgmHat = (time, accent) => {
+        const bufferSize = Math.max(1, Math.floor(audioCtx.sampleRate * 0.05));
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+        }
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 6000;
+        const g = audioCtx.createGain();
+        g.gain.setValueAtTime(accent ? 0.05 : 0.025, time);
+        g.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
+        noise.connect(filter);
+        filter.connect(g);
+        g.connect(bgmGain);
+        noise.start(time);
+    };
+
+    const bgmSchedulerTick = () => {
+        if (!bgmPlaying) return;
+        while (bgmNextStepTime < audioCtx.currentTime + BGM_SCHEDULE_AHEAD_SEC) {
+            const barIndex = Math.floor(bgmStepIndex / 8) % BGM_CHORDS.length;
+            const stepInBar = bgmStepIndex % 8;
+            const chord = BGM_CHORDS[barIndex];
+
+            // A bouncy bass pluck on the downbeat and the "and" of 2 (steps 0 and 4).
+            if (stepInBar === 0 || stepInBar === 4) {
+                scheduleBgmBassNote(chord.root, bgmNextStepTime, BGM_STEP_SEC * 1.3);
+            }
+
+            const arpNote = BGM_ARP_PATTERN[stepInBar];
+            if (arpNote) {
+                const octaveUp = arpNote === 'root8';
+                const freq = chord[octaveUp ? 'root' : arpNote] * (octaveUp ? 4 : 2);
+                scheduleBgmArpNote(freq, bgmNextStepTime, BGM_STEP_SEC * 0.9);
+            }
+
+            // A light shaker/hi-hat tick on every eighth note keeps the energy up,
+            // with a slightly louder accent on the beat.
+            scheduleBgmHat(bgmNextStepTime, stepInBar % 2 === 0);
+
+            bgmNextStepTime += BGM_STEP_SEC;
+            bgmStepIndex = (bgmStepIndex + 1) % (BGM_CHORDS.length * 8);
+        }
+    };
+
+    const startBgm = () => {
+        ensureAudioContext();
+        if (bgmPlaying) return;
+        if (!bgmGain) {
+            bgmGain = audioCtx.createGain();
+            bgmGain.gain.value = Number(ui.bgmVolumeSlider.value);
+            bgmGain.connect(masterCompressor);
+        }
+        bgmPlaying = true;
+        bgmStepIndex = 0;
+        bgmNextStepTime = audioCtx.currentTime + 0.1;
+        bgmSchedulerTick();
+        bgmSchedulerId = setInterval(bgmSchedulerTick, BGM_LOOKAHEAD_MS);
+    };
+
+    const setBgmVolume = (volume) => {
+        if (bgmGain) bgmGain.gain.value = Number(volume);
     };
 
     // --- 4. GAME STATE ---
@@ -141,6 +385,12 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingSentenceSelectedIndex: -1,
         editingSentenceListName: null,
         editingPendingSentenceIndex: -1,
+        bubblesRoam: true, // Point and Pop: whether bubbles drift around the screen
+        countdownDurationSeconds: DEFAULT_COUNTDOWN_SECONDS,
+        obstacles: [], // Stay in Lane: falling rocks the player must dodge
+        obstacleSpawnTimer: 0,
+        obstaclesEnabled: true, // Stay in Lane: whether falling rocks are on
+        sfxVolume: 1, // matches the sfx-volume slider's default
     };
 
     const GAME_MODE_HINTS = {
@@ -249,20 +499,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
     };
 
-    const displaySentenceBlank = (tokens, blankIndex) => {
-        ui.wordContainer.innerHTML = tokens.map((token, i) =>
-            i === blankIndex
-                ? `<span class="sentence-blank">?</span>`
-                : `<span class="sentence-word">${token}</span>`
-        ).join(' ');
+    const displaySentenceBlank = (tokens, blankIndex, revealWord) => {
+        ui.wordContainer.innerHTML = tokens.map((token, i) => {
+            if (i === blankIndex) {
+                return revealWord
+                    ? `<span class="sentence-word sentence-word-revealed">${revealWord}</span>`
+                    : `<span class="sentence-blank">?</span>`;
+            }
+            return `<span class="sentence-word">${token}</span>`;
+        }).join(' ');
     };
 
     const fitFontSize = (ctx, text, maxWidth, maxFontSize) => {
         let fontSize = maxFontSize;
-        ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+        ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
         while (ctx.measureText(text).width > maxWidth && fontSize > 10) {
             fontSize -= 2;
-            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+            ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
         }
         return fontSize;
     };
@@ -272,7 +525,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const { width: canvasWidth, height: canvasHeight } = ui.outputCanvas;
         const baseRadius = Math.min(canvasWidth, canvasHeight) * 0.05;
 
-        ui.ctx.font = `bold ${baseRadius * 0.7}px Comic Sans MS, Arial`;
+        ui.ctx.font = `700 ${baseRadius * 0.7}px 'Baloo 2', Arial`;
         const radii = options.map(label => {
             if (label.length <= 1) return baseRadius;
             const textWidth = ui.ctx.measureText(label).width;
@@ -286,9 +539,14 @@ document.addEventListener('DOMContentLoaded', () => {
         ]);
 
         state.letterBubbles = options.map((label, i) => ({
+            baseX: positions[i].x,
+            baseY: positions[i].y,
             x: positions[i].x,
             y: positions[i].y,
             radius: radii[i],
+            phase: Math.random() * Math.PI * 2,
+            roamRadius: Math.min(canvasWidth, canvasHeight) * (0.14 + Math.random() * 0.06),
+            roamSpeed: 0.75 + Math.random() * 0.5,
             label,
             isCorrect: label === state.correctAnswer,
             createdAt: Date.now(),
@@ -296,31 +554,52 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
     };
 
+    // Shared by drawing and collision detection so a bubble is always popped exactly
+    // where it visually is, even while it's roaming around.
+    const getBubblePosition = (bubble) => {
+        const age = Date.now() - bubble.createdAt;
+        let x = bubble.baseX;
+        let y = bubble.baseY + Math.sin(age / 900 + bubble.phase) * 6;
+
+        if (state.bubblesRoam) {
+            const t = (age / 1000) * bubble.roamSpeed;
+            x += Math.sin(t + bubble.phase) * bubble.roamRadius;
+            y += Math.sin(t * 1.3 + bubble.phase * 1.7) * bubble.roamRadius * 0.6;
+        }
+
+        const pad = bubble.radius + 12;
+        x = Math.min(Math.max(x, pad), ui.outputCanvas.width - pad);
+        y = Math.min(Math.max(y, pad), ui.outputCanvas.height - pad);
+        return { x, y };
+    };
+
     const drawLetterBubbles = () => {
         state.letterBubbles.forEach(bubble => {
             if (bubble.popped) return;
             const { ctx } = ui;
             const age = Date.now() - bubble.createdAt;
-            const pulseScale = 1 + 0.05 * Math.sin(age / 300);
-            const floatOffset = Math.sin(age / 1000) * 5;
+            const pulseScale = 1 + 0.06 * Math.sin(age / 300 + bubble.phase);
+            const { x, y } = getBubblePosition(bubble);
+            bubble.x = x;
+            bubble.y = y;
 
             ctx.save();
             ctx.beginPath();
-            ctx.arc(bubble.x, bubble.y + floatOffset, bubble.radius * pulseScale, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-            ctx.strokeStyle = '#3498db';
-            ctx.lineWidth = 2;
+            ctx.arc(x, y, bubble.radius * pulseScale, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.strokeStyle = '#3DB8E8';
+            ctx.lineWidth = 3;
             ctx.fill();
             ctx.stroke();
 
-            ctx.fillStyle = '#333';
+            ctx.fillStyle = '#26333B';
             const maxTextWidth = bubble.radius * 1.6;
             const fontSize = fitFontSize(ctx, bubble.label, maxTextWidth, bubble.radius * 0.8);
-            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+            ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.scale(-1, 1);
-            ctx.fillText(bubble.label, -bubble.x, bubble.y + floatOffset);
+            ctx.fillText(bubble.label, -x, y);
             ctx.restore();
         });
     };
@@ -337,11 +616,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const progress = isActive ? Math.min(zone.dwellProgress / WORD_POWER_DWELL_MS, 1) : 0;
 
             ctx.save();
-            ctx.fillStyle = isActive ? 'rgba(52, 152, 219, 0.35)' : 'rgba(255, 255, 255, 0.1)';
+            ctx.fillStyle = isActive ? 'rgba(61, 184, 232, 0.4)' : 'rgba(255, 255, 255, 0.12)';
             ctx.fillRect(x, 0, zoneWidth, outputCanvas.height);
 
             if (i > 0) {
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
                 ctx.lineWidth = 2;
                 ctx.beginPath();
                 ctx.moveTo(x, 0);
@@ -351,7 +630,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (progress > 0) {
                 const barHeight = 14;
-                ctx.fillStyle = 'rgba(46, 204, 113, 0.9)';
+                ctx.fillStyle = '#3DDC97';
                 ctx.fillRect(x + 8, outputCanvas.height - barHeight - 8, (zoneWidth - 16) * progress, barHeight);
             }
 
@@ -361,7 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const fontSize = fitFontSize(ctx, zone.word, maxTextWidth, Math.min(zoneWidth * 0.16, 32));
 
             ctx.fillStyle = '#fff';
-            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+            ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             // Counter-flip so the word reads correctly under the mirrored canvas
@@ -369,36 +648,129 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.fillText(zone.word, -centerX, centerY);
             ctx.restore();
         });
+
+        // A dashed "danger line" so players can see where a falling rock will hit them.
+        if (state.obstacles.length > 0) {
+            const dangerY = outputCanvas.height * OBSTACLE_HIT_ZONE_RATIO;
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255, 122, 104, 0.7)';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([10, 8]);
+            ctx.beginPath();
+            ctx.moveTo(0, dangerY);
+            ctx.lineTo(outputCanvas.width, dangerY);
+            ctx.stroke();
+            ctx.restore();
+        }
     };
 
-    const showFeedback = (message, isCorrect) => {
+    // --- 5g-i. Stay in Lane obstacles (falling rocks to dodge) ---
+    const updateObstacles = (dt) => {
+        if (!state.wordZones || state.wordZones.length === 0) return;
+        if (!state.obstaclesEnabled) return;
+        const { outputCanvas } = ui;
+
+        state.obstacleSpawnTimer += dt;
+        const spawnEvery = OBSTACLE_SPAWN_BASE_MS + (Math.random() - 0.5) * 2 * OBSTACLE_SPAWN_JITTER_MS;
+        if (state.obstacleSpawnTimer >= spawnEvery) {
+            state.obstacleSpawnTimer = 0;
+            const padding = 40;
+            state.obstacles.push({
+                // A free x position anywhere across the screen — not locked to a lane center —
+                // so rocks don't just predictably sit in the middle of each lane.
+                x: padding + Math.random() * (outputCanvas.width - padding * 2),
+                y: -40,
+            });
+        }
+
+        const zoneWidth = outputCanvas.width / state.wordZones.length;
+        const hitZoneY = outputCanvas.height * OBSTACLE_HIT_ZONE_RATIO;
+        let wasHit = false;
+
+        state.obstacles = state.obstacles.filter(rock => {
+            rock.y += outputCanvas.height * OBSTACLE_FALL_RATIO_PER_SEC * (dt / 1000);
+            if (rock.y > outputCanvas.height + 40) return false; // fell past the bottom
+
+            if (rock.y >= hitZoneY) {
+                const rockLane = Math.min(state.wordZones.length - 1, Math.floor(rock.x / zoneWidth));
+                if (rockLane === state.activeZoneIndex) {
+                    wasHit = true;
+                    return false; // consumed by the hit
+                }
+            }
+            return true;
+        });
+
+        if (wasHit) handleObstacleHit();
+    };
+
+    const handleObstacleHit = () => {
+        playHitSound();
+        resetWordZoneDwell();
+        showFeedback('💥 Watch out!', 'hit');
+        ui.videoContainer.classList.remove('hit-shake');
+        void ui.videoContainer.offsetWidth;
+        ui.videoContainer.classList.add('hit-shake');
+        setTimeout(() => ui.videoContainer.classList.remove('hit-shake'), 500);
+    };
+
+    const drawObstacles = () => {
+        if (!state.obstacles || state.obstacles.length === 0) return;
+        const { ctx } = ui;
+
+        state.obstacles.forEach(rock => {
+            ctx.save();
+            ctx.font = '40px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.scale(-1, 1);
+            ctx.fillText('🪨', -rock.x, rock.y);
+            ctx.restore();
+        });
+    };
+
+    const showFeedback = (message, variant) => {
+        // variant is 'hit' for an obstacle bump, or true/false for a correct/incorrect answer.
+        const variantClass = variant === true ? 'correct' : variant === false ? 'incorrect' : variant;
         ui.feedback.textContent = message;
-        ui.feedback.className = `feedback ${isCorrect ? 'correct' : 'incorrect'}`;
+        ui.feedback.className = `feedback ${variantClass}`;
         ui.feedback.style.opacity = 1;
         setTimeout(() => { ui.feedback.style.opacity = 0; }, 1500);
+
+        if (variantClass === 'hit') return; // obstacle hits don't touch the word card
+
+        // A little tactile feedback on the word card: sparkle-pop for correct, shake for wrong.
+        const animClass = variantClass === 'correct' ? 'sparkle' : 'shake';
+        ui.wordContainer.classList.remove('sparkle', 'shake');
+        void ui.wordContainer.offsetWidth; // restart the animation even if the same class is reused
+        ui.wordContainer.classList.add(animClass);
+        setTimeout(() => ui.wordContainer.classList.remove(animClass), 600);
     };
 
     // --- 5b. Audio Functions ---
     const playSound = (sound) => {
-        if (sound) {
-            sound.currentTime = 0;
-            sound.play().catch(e => {
-                if (e.name !== 'AbortError') {
-                    console.error("Audio playback failed:", e);
-                }
-            });
+        if (!sound) return;
+
+        // A synthesized sound effect, keyed by a short string.
+        switch (sound) {
+            case 'click': playClickSound(); break;
+            case 'pop': playPopSound(); break;
+            case 'correct': playCorrectSound(); break;
+            case 'wrong': playWrongSound(); break;
+            case 'hit': playHitSound(); break;
         }
     };
 
     const initializeAudio = () => {
-        audio.backgroundMusic.volume = ui.bgmVolumeSlider.value;
-        playSound(audio.backgroundMusic);
+        ensureAudioContext(); // warm up the audio context on this user gesture
+        startBgm();
     };
-    
+
     const setSfxVolume = (volume) => {
-        [audio.buttonClick, audio.popBubble, audio.correctAnswer, audio.wrongAnswer].forEach(s => {
-            if (s) s.volume = volume;
-        });
+        state.sfxVolume = Number(volume);
+        if (sfxMasterGain) {
+            sfxMasterGain.gain.value = state.sfxVolume;
+        }
     };
     
     // --- 5c. API & Data Handling ---
@@ -682,6 +1054,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        playSaveSound();
         resetCustomWordForm();
         renderCustomListManager();
     };
@@ -917,6 +1290,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        playSaveSound();
         resetSentenceForm();
         renderSuperSentenceListManager();
     };
@@ -933,7 +1307,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (customLists[sheetName]) {
             console.log(`Loading custom word list "${sheetName}" from local storage.`);
             return customLists[sheetName]
-                .map(row => ({ word: row.Word?.toUpperCase(), picture: row.Picture }))
+                .map(row => ({ word: row.Word, picture: row.Picture }))
                 .filter(item => item.word && item.word.length > 1);
         }
 
@@ -948,7 +1322,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`Network request failed with status: ${response.status}`);
             }
             const data = await response.json();
-            const words = data.map(row => ({ word: row.Word?.toUpperCase(), picture: row.Picture })).filter(item => item.word && item.word.length > 1);
+            const words = data.map(row => ({ word: row.Word, picture: row.Picture })).filter(item => item.word && item.word.length > 1);
 
             // If fetch is successful, update localStorage for future offline use.
             try {
@@ -983,7 +1357,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (localWords[sheetName]) {
                     console.log(`Successfully loaded words for ${sheetName} from local 'words.json'.`);
-                    const words = localWords[sheetName].map(row => ({ word: row.Word?.toUpperCase(), picture: row.Picture })).filter(item => item.word && item.word.length > 1);
+                    const words = localWords[sheetName].map(row => ({ word: row.Word, picture: row.Picture })).filter(item => item.word && item.word.length > 1);
 
                     // Attempt to warm up localStorage for the next offline session
                     try {
@@ -1008,10 +1382,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
     const generateLetterOptions = (correctLetter) => {
+        // Match the decoy letters' case to whatever case the real word was typed in.
+        const isLowerCase = correctLetter === correctLetter.toLowerCase() && correctLetter !== correctLetter.toUpperCase();
+        const alphabet = isLowerCase ? ALPHABET.toLowerCase() : ALPHABET;
         const incorrectLetters = [];
         while (incorrectLetters.length < 2) {
-            const randomLetter = ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
-            if (randomLetter !== correctLetter && !incorrectLetters.includes(randomLetter)) {
+            const randomLetter = alphabet[Math.floor(Math.random() * alphabet.length)];
+            if (randomLetter.toLowerCase() !== correctLetter.toLowerCase() && !incorrectLetters.includes(randomLetter)) {
                 incorrectLetters.push(randomLetter);
             }
         }
@@ -1126,7 +1503,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const resetTimer = () => {
         stopTimer();
-        state.timerValue = state.timerMode === 'countdown' ? COUNTDOWN_TIME : 0;
+        state.timerValue = state.timerMode === 'countdown' ? state.countdownDurationSeconds : 0;
         updateTimerDisplay();
     };
 
@@ -1212,6 +1589,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     resetWordZoneDwell();
                 }
+                updateObstacles(dt);
             } else if (state.multiHandLandmarks.length > 0) {
                 checkBubbleCollision();
             }
@@ -1219,6 +1597,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isStayInLane) {
             drawWordZones();
+            drawObstacles();
         } else {
             drawLetterBubbles();
         }
@@ -1245,6 +1624,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ui.countdownOverlay.classList.remove('pop');
             void ui.countdownOverlay.offsetWidth; // restart the pop animation
             ui.countdownOverlay.classList.add('pop');
+            playCountdownBeepSound();
         };
 
         showStep();
@@ -1257,6 +1637,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.countdownInterval = null;
                 ui.countdownOverlay.style.display = 'none';
                 state.inputLocked = false;
+                playCountdownGoSound();
                 onDone();
             }
         }, READY_COUNTDOWN_STEP_MS);
@@ -1266,6 +1647,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadQuestion = (question) => {
         state.currentWord = question.word;
         state.waitingForNextQuestion = false;
+        ui.wordContainer.classList.remove('answer-correct', 'answer-wrong', 'shake', 'sparkle');
 
         if (question.wordPowerMode) {
             state.letterBubbles = [];
@@ -1297,10 +1679,21 @@ document.addEventListener('DOMContentLoaded', () => {
             // Avoid re-fetching/flashing the same picture between letters in hard mode
             if (ui.wordImage.src !== question.picture) {
                 ui.wordImage.style.display = 'none'; // Hide image until it's loaded
-                ui.wordImage.src = question.picture;
                 ui.wordImage.onload = () => {
                     ui.wordImage.style.display = 'block';
                 };
+                ui.wordImage.onerror = () => {
+                    ui.wordImage.style.display = 'none';
+                };
+                ui.wordImage.src = question.picture;
+                // Some images (e.g. data: URLs already decoded once) can be "complete"
+                // the instant src is set, without ever firing a fresh 'load' event —
+                // catch that case so the picture isn't left hidden on the first question.
+                if (ui.wordImage.complete && ui.wordImage.naturalWidth > 0) {
+                    ui.wordImage.style.display = 'block';
+                }
+            } else if (ui.wordImage.complete && ui.wordImage.naturalWidth > 0) {
+                ui.wordImage.style.display = 'block';
             }
         } else {
             ui.imagePlaceholder.style.display = 'none';
@@ -1339,7 +1732,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Show the player what the correct answer actually was, once a question is done —
+    // whether they got it right or not.
+    const revealAnswer = (question) => {
+        if (question.sentenceMode) {
+            displaySentenceBlank(question.tokens, question.blankIndex, question.correctAnswer);
+        } else {
+            displayWord(question.word, -1); // no missing index => every letter shown
+        }
+    };
+
     const finishQuestion = (isCorrect) => {
+        const question = state.selectedQuestions[state.currentQuestionIndex];
+        revealAnswer(question);
+        ui.wordContainer.classList.remove('answer-correct', 'answer-wrong');
+        ui.wordContainer.classList.add(isCorrect ? 'answer-correct' : 'answer-wrong');
+
         if (isCorrect) {
             state.score++;
             ui.score.textContent = state.score;
@@ -1379,9 +1787,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (question.hardMode) {
-                displaySpellingWord(question.word, question.word.length);
-            }
             finishQuestion(true);
         } else {
             playSound(audio.wrongAnswer);
@@ -1497,6 +1902,8 @@ document.addEventListener('DOMContentLoaded', () => {
         state.score = 0;
         state.currentQuestionIndex = 0;
         state.gameActive = true;
+        state.obstacles = [];
+        state.obstacleSpawnTimer = 0;
         ui.score.textContent = state.score;
         ui.mainMenuBtn.style.display = 'block';
 
@@ -1520,6 +1927,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.gameActive = false;
         stopTimer();
         cancelCountdown();
+        playGameOverSound();
         ui.finalScore.textContent = state.score;
         document.querySelector('#game-over p').innerHTML = `Your score: <span id="final-score">${state.score}</span>/${state.selectedQuestions.length}`;
         showScreen(ui.gameOverScreen);
@@ -1544,6 +1952,8 @@ document.addEventListener('DOMContentLoaded', () => {
         state.letterBubbles = [];
         state.wordZones = [];
         state.activeZoneIndex = -1;
+        state.obstacles = [];
+        state.obstacleSpawnTimer = 0;
         cancelCountdown();
         ui.wordContainer.innerHTML = '';
         ui.imagePlaceholder.style.display = 'none';
@@ -1554,6 +1964,8 @@ document.addEventListener('DOMContentLoaded', () => {
         resetTimer();
 
         ui.difficultySettingsSection.style.display = state.gameMode === 'stayInLane' ? 'none' : 'block';
+        ui.bubbleMovementSettingsSection.style.display = state.gameMode === 'stayInLane' ? 'none' : 'block';
+        ui.obstacleSettingsSection.style.display = state.gameMode === 'stayInLane' ? 'block' : 'none';
 
         // Populate the preset level dropdown
         ui.levelSelect.innerHTML = '<option value="" disabled selected>Select a level...</option>';
@@ -1670,6 +2082,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 ui.modeStayInLaneBtn.classList.toggle('active', state.gameMode === 'stayInLane');
                 ui.gameModeHint.textContent = GAME_MODE_HINTS[state.gameMode];
                 ui.difficultySettingsSection.style.display = state.gameMode === 'stayInLane' ? 'none' : 'block';
+                ui.bubbleMovementSettingsSection.style.display = state.gameMode === 'stayInLane' ? 'none' : 'block';
+                ui.obstacleSettingsSection.style.display = state.gameMode === 'stayInLane' ? 'block' : 'none';
+            });
+        });
+
+        [ui.bubblesRoamBtn, ui.bubblesStillBtn].forEach(btn => {
+            btn.addEventListener('click', () => {
+                playSound(audio.buttonClick);
+                state.bubblesRoam = btn.id === 'bubbles-roam-btn';
+                ui.bubblesRoamBtn.classList.toggle('active', state.bubblesRoam);
+                ui.bubblesStillBtn.classList.toggle('active', !state.bubblesRoam);
+            });
+        });
+
+        [ui.obstaclesOnBtn, ui.obstaclesOffBtn].forEach(btn => {
+            btn.addEventListener('click', () => {
+                playSound(audio.buttonClick);
+                state.obstaclesEnabled = btn.id === 'obstacles-on-btn';
+                ui.obstaclesOnBtn.classList.toggle('active', state.obstaclesEnabled);
+                ui.obstaclesOffBtn.classList.toggle('active', !state.obstaclesEnabled);
+                if (!state.obstaclesEnabled) {
+                    state.obstacles = [];
+                    state.obstacleSpawnTimer = 0;
+                }
             });
         });
 
@@ -1694,8 +2130,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 ui.noTimerBtn.classList.toggle('active', state.timerMode === 'none');
             });
         });
+
+        ui.countdownDurationInput.addEventListener('change', () => {
+            const minutes = Math.max(1, Math.min(15, Number(ui.countdownDurationInput.value) || 1));
+            ui.countdownDurationInput.value = minutes;
+            state.countdownDurationSeconds = minutes * 60;
+        });
         
-        ui.bgmVolumeSlider.addEventListener('input', (e) => audio.backgroundMusic.volume = e.target.value);
+        ui.bgmVolumeSlider.addEventListener('input', (e) => setBgmVolume(e.target.value));
         ui.sfxVolumeSlider.addEventListener('input', (e) => setSfxVolume(e.target.value));
     };
 
