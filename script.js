@@ -55,6 +55,8 @@ document.addEventListener('DOMContentLoaded', () => {
         saveCustomListBtn: document.getElementById('save-custom-list-btn'),
         cancelEditBtn: document.getElementById('cancel-edit-btn'),
         backToLevelsBtn: document.getElementById('back-to-levels-btn'),
+        easyModeBtn: document.getElementById('easy-mode-btn'),
+        hardModeBtn: document.getElementById('hard-mode-btn'),
         stopwatchBtn: document.getElementById('stopwatch-btn'),
         countdownBtn: document.getElementById('countdown-btn'),
         noTimerBtn: document.getElementById('no-timer-btn'),
@@ -104,6 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingWords: [],
         pendingImageDataUrl: null,
         editingListName: null,
+        difficulty: 'easy', // 'easy' or 'hard'
     };
 
     const hands = new Hands(MEDIAPIPE_HANDS_CONFIG);
@@ -150,6 +153,14 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.wordContainer.innerHTML = word.split('').map((letter, i) =>
             `<div class="letter-box ${i === missingIndex ? 'missing' : ''}">${i === missingIndex ? '?' : letter}</div>`
         ).join('');
+    };
+
+    const displaySpellingWord = (word, revealIndex) => {
+        ui.wordContainer.innerHTML = word.split('').map((letter, i) => {
+            if (i < revealIndex) return `<div class="letter-box">${letter}</div>`;
+            if (i === revealIndex) return `<div class="letter-box missing">?</div>`;
+            return `<div class="letter-box pending"></div>`;
+        }).join('');
     };
 
     const createLetterBubbles = (options) => {
@@ -532,24 +543,43 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    const generateQuestionData = (wordData) => {
-        const word = wordData.word;
-        const missingIndex = Math.floor(Math.random() * (word.length - 2)) + 1;
-        const correctLetter = word[missingIndex];
-        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+    const generateLetterOptions = (correctLetter) => {
         const incorrectLetters = [];
         while (incorrectLetters.length < 2) {
-            const randomLetter = alphabet[Math.floor(Math.random() * alphabet.length)];
+            const randomLetter = ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
             if (randomLetter !== correctLetter && !incorrectLetters.includes(randomLetter)) {
                 incorrectLetters.push(randomLetter);
             }
         }
+        return shuffleArray([correctLetter, ...incorrectLetters]);
+    };
+
+    const generateQuestionData = (wordData) => {
+        const word = wordData.word;
+        const hardMode = state.difficulty === 'hard' && !!wordData.picture;
+
+        if (hardMode) {
+            return {
+                word,
+                picture: wordData.picture,
+                hardMode: true,
+                letterIndex: 0,
+                correctLetter: word[0],
+                options: generateLetterOptions(word[0]),
+            };
+        }
+
+        const missingIndex = Math.floor(Math.random() * (word.length - 2)) + 1;
+        const correctLetter = word[missingIndex];
         return {
             word,
             missingIndex,
             correctLetter,
-            options: shuffleArray([correctLetter, ...incorrectLetters]),
-            picture: wordData.picture
+            options: generateLetterOptions(correctLetter),
+            picture: wordData.picture,
+            hardMode: false,
         };
     };
 
@@ -659,20 +689,27 @@ document.addEventListener('DOMContentLoaded', () => {
         state.currentWord = question.word;
         state.correctLetter = question.correctLetter;
         state.waitingForNextQuestion = false;
-        
-        displayWord(question.word, question.missingIndex);
+
+        if (question.hardMode) {
+            displaySpellingWord(question.word, question.letterIndex);
+        } else {
+            displayWord(question.word, question.missingIndex);
+        }
     
         if (question.picture) {
             const wordContainerHeight = ui.wordContainer.offsetHeight;
             ui.imagePlaceholder.style.height = `${wordContainerHeight * 1.5}px`;
             ui.imagePlaceholder.style.width = `${ui.wordContainer.offsetWidth}px`;
             ui.imagePlaceholder.style.display = 'flex';
-            
-            ui.wordImage.style.display = 'none'; // Hide image until it's loaded
-            ui.wordImage.src = question.picture;
-            ui.wordImage.onload = () => {
-                ui.wordImage.style.display = 'block';
-            };
+
+            // Avoid re-fetching/flashing the same picture between letters in hard mode
+            if (ui.wordImage.src !== question.picture) {
+                ui.wordImage.style.display = 'none'; // Hide image until it's loaded
+                ui.wordImage.src = question.picture;
+                ui.wordImage.onload = () => {
+                    ui.wordImage.style.display = 'block';
+                };
+            }
         } else {
             ui.imagePlaceholder.style.display = 'none';
             ui.wordImage.src = '';
@@ -710,11 +747,28 @@ document.addEventListener('DOMContentLoaded', () => {
         state.waitingForNextQuestion = true;
         playSound(audio.popBubble);
 
+        const question = state.selectedQuestions[state.currentQuestionIndex];
+
         if (bubble.isCorrect) {
+            playSound(audio.correctAnswer);
+
+            // Hard mode: more letters left in this word — advance within the same question
+            if (question.hardMode && question.letterIndex < question.word.length - 1) {
+                showFeedback("Correct! 🎉", true);
+                question.letterIndex++;
+                question.correctLetter = question.word[question.letterIndex];
+                question.options = generateLetterOptions(question.correctLetter);
+
+                setTimeout(() => loadQuestion(question), 900);
+                return;
+            }
+
+            if (question.hardMode) {
+                displaySpellingWord(question.word, question.word.length);
+            }
             state.score++;
             ui.score.textContent = state.score;
             showFeedback("Correct! 🎉", true);
-            playSound(audio.correctAnswer);
         } else {
             showFeedback("Try again! 🤔", false);
             playSound(audio.wrongAnswer);
@@ -864,6 +918,15 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         ui.removePendingImageBtn.addEventListener('click', () => { playSound(audio.buttonClick); clearPendingImage(); });
+
+        [ui.easyModeBtn, ui.hardModeBtn].forEach(btn => {
+            btn.addEventListener('click', () => {
+                playSound(audio.buttonClick);
+                state.difficulty = btn.id === 'hard-mode-btn' ? 'hard' : 'easy';
+                ui.easyModeBtn.classList.toggle('active', state.difficulty === 'easy');
+                ui.hardModeBtn.classList.toggle('active', state.difficulty === 'hard');
+            });
+        });
 
         [ui.stopwatchBtn, ui.countdownBtn, ui.noTimerBtn].forEach(btn => {
             btn.addEventListener('click', () => {
