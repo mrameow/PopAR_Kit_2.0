@@ -15,6 +15,7 @@
             <div class="video-container">
                 <video id="video-input" playsinline></video>
                 <canvas id="output-canvas"></canvas>
+                <div class="countdown-overlay" id="countdown-overlay"></div>
             </div>
 
             <div class="score-container">
@@ -46,13 +47,13 @@
                 <h1>PopAR Kit 2.0</h1>
 
                 <div class="game-mode-selector" id="game-mode-selector">
-                    <button class="game-mode-btn active" id="mode-letter-bubble-btn" type="button">
+                    <button class="game-mode-btn active" id="mode-point-and-pop-btn" type="button">
                         <span class="game-mode-icon">🫧</span>
-                        <span class="game-mode-label">Letter Bubble</span>
+                        <span class="game-mode-label">Point and Pop</span>
                     </button>
-                    <button class="game-mode-btn" id="mode-word-power-btn" type="button">
-                        <span class="game-mode-icon">💪</span>
-                        <span class="game-mode-label">Word Power</span>
+                    <button class="game-mode-btn" id="mode-stay-in-lane-btn" type="button">
+                        <span class="game-mode-icon">🚶</span>
+                        <span class="game-mode-label">Stay in Lane</span>
                     </button>
                 </div>
                 <p class="game-mode-hint" id="game-mode-hint">Pop the bubble with the missing letter!</p>
@@ -60,10 +61,17 @@
                 <div class="menu-scroll-area">
 
                 <div class="menu-section">
-                    <div class="menu-section-title">Your Own Words</div>
+                    <div class="menu-section-title">Word Power</div>
                     <div class="level-buttons-container" id="custom-level-buttons-container">
                         </div>
                     <button class="btn btn-secondary" id="my-words-btn">📝 My Word Lists</button>
+                </div>
+
+                <div class="menu-section">
+                    <div class="menu-section-title">Super Sentence</div>
+                    <div class="level-buttons-container" id="super-sentence-buttons-container">
+                        </div>
+                    <button class="btn btn-secondary" id="my-sentences-btn">📖 My Super Sentences</button>
                 </div>
 
                 <div class="menu-section">
@@ -148,6 +156,35 @@
                     <button class="btn btn-secondary" id="cancel-edit-btn" hidden>Cancel Edit</button>
                 </div>
                 <button class="btn" id="back-to-levels-btn">Back to Levels</button>
+            </div>
+
+            <div class="custom-words-screen" id="super-sentence-screen" style="display: none;">
+                <h1>📖 Super Sentence</h1>
+                <p>Type a full sentence, then tap the word you want to test!</p>
+                <div class="custom-list-container" id="super-sentence-list-container"></div>
+                <div class="custom-word-form">
+                    <input type="text" id="super-sentence-list-name" placeholder="List name (e.g. My Sentences)" aria-label="List name">
+
+                    <div class="word-entry-row">
+                        <input type="text" id="sentence-input" placeholder="Type a full sentence..." aria-label="Sentence">
+                        <label class="image-attach-btn" for="sentence-word-image" title="Add a picture for the tested word (optional)">🖼️</label>
+                        <input type="file" id="sentence-word-image" accept="image/*" hidden>
+                    </div>
+                    <div class="sentence-word-picker" id="sentence-word-picker"></div>
+
+                    <div class="pending-image-preview" id="sentence-pending-image-preview" style="display: none;">
+                        <img id="sentence-pending-image-thumb" src="" alt="Selected picture">
+                        <span>Picture attached</span>
+                        <button type="button" class="remove-word-btn" id="sentence-remove-image-btn" aria-label="Remove picture">✕</button>
+                    </div>
+
+                    <button class="btn btn-secondary" id="add-sentence-btn" type="button">Add Sentence</button>
+                    <div class="word-chip-container" id="sentence-chip-container"></div>
+
+                    <button class="btn" id="save-sentence-list-btn">Save List</button>
+                    <button class="btn btn-secondary" id="cancel-sentence-edit-btn" hidden>Cancel Edit</button>
+                </div>
+                <button class="btn" id="back-to-levels-from-sentence-btn">Back to Levels</button>
             </div>
 
             <div class="start-screen" id="start-screen" style="display: none;">

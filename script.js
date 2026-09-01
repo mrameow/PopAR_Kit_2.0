@@ -6,8 +6,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const BASE_OPENSHEET_URL = `https://opensheet.elk.sh/${GOOGLE_SHEET_ID}/`;
     const AVAILABLE_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "The Password"];
     const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
-    const WORD_POWER_DWELL_MS = 2000; // how long to hold a zone to confirm the answer
+    const SUPER_SENTENCE_LISTS_KEY = 'popar_super_sentence_lists';
+    const WORD_POWER_DWELL_MS = 3000; // how long to hold a lane to confirm the answer
     const COUNTDOWN_TIME = 60; // seconds
+    const READY_COUNTDOWN_STEPS = [3, 2, 1];
+    const READY_COUNTDOWN_STEP_MS = 700;
     const WASM_PATH = './mediapipe/wasm';
     const HAND_MODEL_PATH = './models/hand_landmarker.task';
     const POSE_MODEL_PATH = './models/pose_landmarker_lite.task';
@@ -53,9 +56,26 @@ document.addEventListener('DOMContentLoaded', () => {
         easyModeBtn: document.getElementById('easy-mode-btn'),
         hardModeBtn: document.getElementById('hard-mode-btn'),
         difficultySettingsSection: document.getElementById('difficulty-settings-section'),
-        modeLetterBubbleBtn: document.getElementById('mode-letter-bubble-btn'),
-        modeWordPowerBtn: document.getElementById('mode-word-power-btn'),
+        modePointAndPopBtn: document.getElementById('mode-point-and-pop-btn'),
+        modeStayInLaneBtn: document.getElementById('mode-stay-in-lane-btn'),
         gameModeHint: document.getElementById('game-mode-hint'),
+        countdownOverlay: document.getElementById('countdown-overlay'),
+        superSentenceButtonsContainer: document.getElementById('super-sentence-buttons-container'),
+        mySentencesBtn: document.getElementById('my-sentences-btn'),
+        superSentenceScreen: document.getElementById('super-sentence-screen'),
+        superSentenceListContainer: document.getElementById('super-sentence-list-container'),
+        superSentenceListNameInput: document.getElementById('super-sentence-list-name'),
+        sentenceInput: document.getElementById('sentence-input'),
+        sentenceWordPicker: document.getElementById('sentence-word-picker'),
+        sentenceWordImageInput: document.getElementById('sentence-word-image'),
+        sentencePendingImagePreview: document.getElementById('sentence-pending-image-preview'),
+        sentencePendingImageThumb: document.getElementById('sentence-pending-image-thumb'),
+        sentenceRemoveImageBtn: document.getElementById('sentence-remove-image-btn'),
+        addSentenceBtn: document.getElementById('add-sentence-btn'),
+        sentenceChipContainer: document.getElementById('sentence-chip-container'),
+        saveSentenceListBtn: document.getElementById('save-sentence-list-btn'),
+        cancelSentenceEditBtn: document.getElementById('cancel-sentence-edit-btn'),
+        backToLevelsFromSentenceBtn: document.getElementById('back-to-levels-from-sentence-btn'),
         stopwatchBtn: document.getElementById('stopwatch-btn'),
         countdownBtn: document.getElementById('countdown-btn'),
         noTimerBtn: document.getElementById('no-timer-btn'),
@@ -94,7 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
         cameraInitialized: false,
         videoAspectRatio: 16 / 9,
         currentWord: "",
-        correctLetter: "",
+        correctAnswer: "",
         selectedQuestions: [],
         waitingForNextQuestion: false,
         selectedLevelName: '',
@@ -106,17 +126,26 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingWords: [],
         pendingImageDataUrl: null,
         editingListName: null,
+        editingPendingWordIndex: -1,
         difficulty: 'easy', // 'easy' or 'hard'
-        gameMode: 'letterBubble', // 'letterBubble' or 'wordPower'
+        gameMode: 'pointAndPop', // 'pointAndPop' or 'stayInLane'
         wordZones: [],
         activeZoneIndex: -1,
         lastFrameTime: 0,
         poseLandmarks: null,
+        selectedContentType: 'words', // 'words' or 'sentence'
+        inputLocked: false,
+        countdownInterval: null,
+        pendingSentences: [],
+        pendingSentenceImageDataUrl: null,
+        pendingSentenceSelectedIndex: -1,
+        editingSentenceListName: null,
+        editingPendingSentenceIndex: -1,
     };
 
     const GAME_MODE_HINTS = {
-        letterBubble: 'Pop the bubble with the missing letter!',
-        wordPower: 'Move into the zone with the correct word and hold still!',
+        pointAndPop: 'Pop the bubble with the missing letter!',
+        stayInLane: 'Move into the lane with the correct word and hold still!',
     };
 
     let handLandmarker = null;
@@ -164,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 5a. UI & Drawing Functions ---
     const showScreen = (screen) => {
-        [ui.cameraPermissionScreen, ui.levelSelectionScreen, ui.startScreen, ui.gameOverScreen, ui.customWordsScreen].forEach(s => s.style.display = 'none');
+        [ui.cameraPermissionScreen, ui.levelSelectionScreen, ui.startScreen, ui.gameOverScreen, ui.customWordsScreen, ui.superSentenceScreen].forEach(s => s.style.display = 'none');
         
         ui.installButton.hidden = true;
 
@@ -220,9 +249,35 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
     };
 
-    const createLetterBubbles = (options) => {
+    const displaySentenceBlank = (tokens, blankIndex) => {
+        ui.wordContainer.innerHTML = tokens.map((token, i) =>
+            i === blankIndex
+                ? `<span class="sentence-blank">?</span>`
+                : `<span class="sentence-word">${token}</span>`
+        ).join(' ');
+    };
+
+    const fitFontSize = (ctx, text, maxWidth, maxFontSize) => {
+        let fontSize = maxFontSize;
+        ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+        while (ctx.measureText(text).width > maxWidth && fontSize > 10) {
+            fontSize -= 2;
+            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+        }
+        return fontSize;
+    };
+
+    // Bubbles hold either a single letter or a whole word (Super Sentence), sized to fit either.
+    const createBubbles = (options) => {
         const { width: canvasWidth, height: canvasHeight } = ui.outputCanvas;
-        const bubbleRadius = Math.min(canvasWidth, canvasHeight) * 0.05;
+        const baseRadius = Math.min(canvasWidth, canvasHeight) * 0.05;
+
+        ui.ctx.font = `bold ${baseRadius * 0.7}px Comic Sans MS, Arial`;
+        const radii = options.map(label => {
+            if (label.length <= 1) return baseRadius;
+            const textWidth = ui.ctx.measureText(label).width;
+            return Math.max(baseRadius, textWidth / 2 + 18);
+        });
 
         const positions = shuffleArray([
             { x: canvasWidth * 0.25, y: canvasHeight * 0.3 },
@@ -230,12 +285,12 @@ document.addEventListener('DOMContentLoaded', () => {
             { x: canvasWidth * 0.75, y: canvasHeight * 0.3 },
         ]);
 
-        state.letterBubbles = options.map((letter, i) => ({
+        state.letterBubbles = options.map((label, i) => ({
             x: positions[i].x,
             y: positions[i].y,
-            radius: bubbleRadius,
-            letter,
-            isCorrect: letter === state.correctLetter,
+            radius: radii[i],
+            label,
+            isCorrect: label === state.correctAnswer,
             createdAt: Date.now(),
             popped: false,
         }));
@@ -259,23 +314,15 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.stroke();
 
             ctx.fillStyle = '#333';
-            ctx.font = `bold ${bubble.radius * 0.8}px Comic Sans MS, Arial`;
+            const maxTextWidth = bubble.radius * 1.6;
+            const fontSize = fitFontSize(ctx, bubble.label, maxTextWidth, bubble.radius * 0.8);
+            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.scale(-1, 1);
-            ctx.fillText(bubble.letter, -bubble.x, bubble.y + floatOffset);
+            ctx.fillText(bubble.label, -bubble.x, bubble.y + floatOffset);
             ctx.restore();
         });
-    };
-    
-    const fitFontSize = (ctx, text, maxWidth, maxFontSize) => {
-        let fontSize = maxFontSize;
-        ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
-        while (ctx.measureText(text).width > maxWidth && fontSize > 10) {
-            fontSize -= 2;
-            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
-        }
-        return fontSize;
     };
 
     const drawWordZones = () => {
@@ -383,6 +430,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // --- 5c-ii. Super Sentence Lists ---
+    const getSuperSentenceLists = () => {
+        try {
+            return JSON.parse(localStorage.getItem(SUPER_SENTENCE_LISTS_KEY)) || {};
+        } catch (e) {
+            console.warn('Could not read Super Sentence lists from localStorage:', e);
+            return {};
+        }
+    };
+
+    const saveSuperSentenceLists = (lists) => {
+        try {
+            localStorage.setItem(SUPER_SENTENCE_LISTS_KEY, JSON.stringify(lists));
+            return true;
+        } catch (e) {
+            console.warn('Could not save Super Sentence lists to localStorage:', e);
+            return false;
+        }
+    };
+
     const resizeImageToDataUrl = (file, maxDim = 320, quality = 0.75) => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -463,9 +530,10 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.wordChipContainer.innerHTML = '';
         state.pendingWords.forEach((entry, index) => {
             const chip = document.createElement('div');
-            chip.className = 'word-chip';
+            chip.className = 'word-chip' + (index === state.editingPendingWordIndex ? ' editing' : '');
             const thumbHtml = entry.picture ? `<img class="word-chip-thumb" src="${entry.picture}" alt="">` : '';
-            chip.innerHTML = `${thumbHtml}<span>${entry.word}</span>`;
+            chip.innerHTML = `${thumbHtml}<span class="chip-label">${entry.word}</span>`;
+            chip.querySelector('.chip-label').onclick = () => handleEditPendingWord(index);
 
             const removeBtn = document.createElement('button');
             removeBtn.className = 'remove-word-btn';
@@ -473,12 +541,41 @@ document.addEventListener('DOMContentLoaded', () => {
             removeBtn.setAttribute('aria-label', `Remove ${entry.word}`);
             removeBtn.onclick = () => {
                 state.pendingWords.splice(index, 1);
+                if (state.editingPendingWordIndex === index) {
+                    state.editingPendingWordIndex = -1;
+                    ui.singleWordInput.value = '';
+                    clearPendingImage();
+                    ui.addWordBtn.textContent = 'Add';
+                }
                 renderWordChips();
             };
 
             chip.appendChild(removeBtn);
             ui.wordChipContainer.appendChild(chip);
         });
+    };
+
+    // Tapping a pending word chip loads it into the form for editing, WITHOUT removing it
+    // from the list yet — so switching to edit a different word never loses it.
+    const handleEditPendingWord = (index) => {
+        const entry = state.pendingWords[index];
+        if (!entry) return;
+        state.editingPendingWordIndex = index;
+
+        ui.bulkModeToggle.checked = false;
+        setBulkMode(false);
+        ui.singleWordInput.value = entry.word;
+        if (entry.picture) {
+            state.pendingImageDataUrl = entry.picture;
+            ui.pendingImageThumb.src = entry.picture;
+            ui.pendingImagePreview.style.display = 'flex';
+        } else {
+            clearPendingImage();
+        }
+
+        ui.addWordBtn.textContent = 'Update';
+        renderWordChips();
+        ui.singleWordInput.focus();
     };
 
     const clearPendingImage = () => {
@@ -490,7 +587,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const handleAddWord = () => {
         const word = ui.singleWordInput.value.trim();
         if (word.length > 1) {
-            state.pendingWords.push({ word, picture: state.pendingImageDataUrl });
+            if (state.editingPendingWordIndex >= 0) {
+                state.pendingWords[state.editingPendingWordIndex] = { word, picture: state.pendingImageDataUrl };
+                state.editingPendingWordIndex = -1;
+                ui.addWordBtn.textContent = 'Add';
+            } else {
+                state.pendingWords.push({ word, picture: state.pendingImageDataUrl });
+            }
             renderWordChips();
         }
         ui.singleWordInput.value = '';
@@ -505,9 +608,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const resetCustomWordForm = () => {
         state.editingListName = null;
+        state.editingPendingWordIndex = -1;
         ui.customListNameInput.value = '';
         ui.customListWordsInput.value = '';
         ui.singleWordInput.value = '';
+        ui.addWordBtn.textContent = 'Add';
         state.pendingWords = [];
         clearPendingImage();
         renderWordChips();
@@ -529,9 +634,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!words) return;
 
         state.editingListName = name;
+        state.editingPendingWordIndex = -1;
         state.pendingWords = words.map(w => ({ word: w.Word, picture: w.Picture || null }));
         clearPendingImage();
         ui.customListNameInput.value = name;
+        ui.singleWordInput.value = '';
+        ui.addWordBtn.textContent = 'Add';
         ui.bulkModeToggle.checked = false;
         setBulkMode(false);
         ui.customListWordsInput.value = '';
@@ -576,6 +684,247 @@ document.addEventListener('DOMContentLoaded', () => {
 
         resetCustomWordForm();
         renderCustomListManager();
+    };
+
+    // --- 5c-iii. Super Sentence Builder ---
+    const tokenizeSentence = (sentence) => sentence.trim().split(/\s+/).filter(Boolean);
+
+    const renderSentenceWordPicker = () => {
+        const tokens = tokenizeSentence(ui.sentenceInput.value);
+        ui.sentenceWordPicker.innerHTML = '';
+        tokens.forEach((token, i) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'sentence-word-option' + (i === state.pendingSentenceSelectedIndex ? ' selected' : '');
+            btn.textContent = token;
+            btn.onclick = () => {
+                state.pendingSentenceSelectedIndex = state.pendingSentenceSelectedIndex === i ? -1 : i;
+                renderSentenceWordPicker();
+            };
+            ui.sentenceWordPicker.appendChild(btn);
+        });
+    };
+
+    const clearPendingSentenceImage = () => {
+        state.pendingSentenceImageDataUrl = null;
+        ui.sentenceWordImageInput.value = '';
+        ui.sentencePendingImagePreview.style.display = 'none';
+    };
+
+    const renderSentenceChips = () => {
+        ui.sentenceChipContainer.innerHTML = '';
+        state.pendingSentences.forEach((entry, index) => {
+            const tokens = tokenizeSentence(entry.sentence);
+            const preview = tokens.map((t, i) => i === entry.blankIndex ? `[${t}]` : t).join(' ');
+
+            const chip = document.createElement('div');
+            chip.className = 'word-chip sentence-chip' + (index === state.editingPendingSentenceIndex ? ' editing' : '');
+            const thumbHtml = entry.picture ? `<img class="word-chip-thumb" src="${entry.picture}" alt="">` : '';
+            chip.innerHTML = `${thumbHtml}<span class="chip-label" title="${preview}">${preview}</span>`;
+            chip.querySelector('.chip-label').onclick = () => handleEditPendingSentence(index);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-word-btn';
+            removeBtn.textContent = '✕';
+            removeBtn.setAttribute('aria-label', 'Remove sentence');
+            removeBtn.onclick = () => {
+                state.pendingSentences.splice(index, 1);
+                if (state.editingPendingSentenceIndex === index) {
+                    state.editingPendingSentenceIndex = -1;
+                    ui.sentenceInput.value = '';
+                    state.pendingSentenceSelectedIndex = -1;
+                    renderSentenceWordPicker();
+                    clearPendingSentenceImage();
+                    ui.addSentenceBtn.textContent = 'Add Sentence';
+                }
+                renderSentenceChips();
+            };
+
+            chip.appendChild(removeBtn);
+            ui.sentenceChipContainer.appendChild(chip);
+        });
+    };
+
+    // Tapping a pending sentence chip loads it into the form for editing, WITHOUT removing
+    // it from the list yet — so switching to edit a different sentence never loses it.
+    const handleEditPendingSentence = (index) => {
+        const entry = state.pendingSentences[index];
+        if (!entry) return;
+        state.editingPendingSentenceIndex = index;
+
+        ui.sentenceInput.value = entry.sentence;
+        state.pendingSentenceSelectedIndex = entry.blankIndex;
+        renderSentenceWordPicker();
+
+        if (entry.picture) {
+            state.pendingSentenceImageDataUrl = entry.picture;
+            ui.sentencePendingImageThumb.src = entry.picture;
+            ui.sentencePendingImagePreview.style.display = 'flex';
+        } else {
+            clearPendingSentenceImage();
+        }
+
+        ui.addSentenceBtn.textContent = 'Update Sentence';
+        renderSentenceChips();
+        ui.sentenceInput.focus();
+    };
+
+    const handleAddSentence = () => {
+        const sentence = ui.sentenceInput.value.trim();
+        const tokens = tokenizeSentence(sentence);
+        const blankIndex = state.pendingSentenceSelectedIndex;
+
+        if (tokens.length < 2) {
+            alert('Please type a full sentence with at least 2 words.');
+            return;
+        }
+        if (blankIndex < 0 || blankIndex >= tokens.length) {
+            alert('Please tap the word in the sentence you want to test.');
+            return;
+        }
+
+        const newEntry = { sentence, blankIndex, picture: state.pendingSentenceImageDataUrl };
+        if (state.editingPendingSentenceIndex >= 0) {
+            state.pendingSentences[state.editingPendingSentenceIndex] = newEntry;
+            state.editingPendingSentenceIndex = -1;
+            ui.addSentenceBtn.textContent = 'Add Sentence';
+        } else {
+            state.pendingSentences.push(newEntry);
+        }
+        renderSentenceChips();
+
+        ui.sentenceInput.value = '';
+        state.pendingSentenceSelectedIndex = -1;
+        renderSentenceWordPicker();
+        clearPendingSentenceImage();
+        ui.sentenceInput.focus();
+    };
+
+    const resetSentenceForm = () => {
+        state.editingSentenceListName = null;
+        state.editingPendingSentenceIndex = -1;
+        ui.superSentenceListNameInput.value = '';
+        ui.sentenceInput.value = '';
+        ui.addSentenceBtn.textContent = 'Add Sentence';
+        state.pendingSentences = [];
+        state.pendingSentenceSelectedIndex = -1;
+        clearPendingSentenceImage();
+        renderSentenceWordPicker();
+        renderSentenceChips();
+        ui.saveSentenceListBtn.textContent = 'Save List';
+        ui.cancelSentenceEditBtn.hidden = true;
+    };
+
+    const renderSuperSentenceListManager = () => {
+        const lists = getSuperSentenceLists();
+        const names = Object.keys(lists);
+        ui.superSentenceListContainer.innerHTML = '';
+
+        if (names.length === 0) {
+            ui.superSentenceListContainer.innerHTML = '<p style="opacity: 0.8;">No sentence lists yet. Add one below!</p>';
+            return;
+        }
+
+        names.forEach(name => {
+            const item = document.createElement('div');
+            item.className = 'custom-list-item' + (name === state.editingSentenceListName ? ' editing' : '');
+            item.innerHTML = `<span>${name} (${lists[name].length} sentences)</span>`;
+
+            const editBtn = document.createElement('button');
+            editBtn.className = 'edit-list-btn';
+            editBtn.textContent = '✏️';
+            editBtn.setAttribute('aria-label', `Edit ${name}`);
+            editBtn.onclick = () => { playSound(audio.buttonClick); handleEditSentenceList(name); };
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-list-btn';
+            deleteBtn.textContent = '✕';
+            deleteBtn.setAttribute('aria-label', `Delete ${name}`);
+            deleteBtn.onclick = () => {
+                playSound(audio.buttonClick);
+                const currentLists = getSuperSentenceLists();
+                delete currentLists[name];
+                saveSuperSentenceLists(currentLists);
+                if (state.editingSentenceListName === name) handleCancelSentenceEdit();
+                renderSuperSentenceListManager();
+            };
+
+            item.appendChild(editBtn);
+            item.appendChild(deleteBtn);
+            ui.superSentenceListContainer.appendChild(item);
+        });
+    };
+
+    const showSuperSentenceScreen = () => {
+        resetSentenceForm();
+        renderSuperSentenceListManager();
+        showScreen(ui.superSentenceScreen);
+    };
+
+    const handleEditSentenceList = (name) => {
+        const lists = getSuperSentenceLists();
+        const entries = lists[name];
+        if (!entries) return;
+
+        state.editingSentenceListName = name;
+        state.editingPendingSentenceIndex = -1;
+        state.pendingSentences = entries.map(e => ({ sentence: e.Sentence, blankIndex: e.BlankIndex, picture: e.Picture || null }));
+        ui.superSentenceListNameInput.value = name;
+        ui.sentenceInput.value = '';
+        ui.addSentenceBtn.textContent = 'Add Sentence';
+        state.pendingSentenceSelectedIndex = -1;
+        clearPendingSentenceImage();
+        renderSentenceWordPicker();
+        renderSentenceChips();
+        renderSuperSentenceListManager();
+        ui.saveSentenceListBtn.textContent = 'Update List';
+        ui.cancelSentenceEditBtn.hidden = false;
+        ui.superSentenceListNameInput.focus();
+    };
+
+    const handleCancelSentenceEdit = () => {
+        resetSentenceForm();
+        renderSuperSentenceListManager();
+    };
+
+    const handleSaveSentenceList = () => {
+        playSound(audio.buttonClick);
+        const name = ui.superSentenceListNameInput.value.trim();
+
+        if (!name) {
+            alert('Please enter a name for your sentence list.');
+            return;
+        }
+        if (state.pendingSentences.length === 0) {
+            alert('Please add at least one sentence.');
+            return;
+        }
+
+        const entries = state.pendingSentences.map(s => ({
+            Sentence: s.sentence,
+            BlankIndex: s.blankIndex,
+            ...(s.picture ? { Picture: s.picture } : {}),
+        }));
+
+        const lists = getSuperSentenceLists();
+        if (state.editingSentenceListName && state.editingSentenceListName !== name) {
+            delete lists[state.editingSentenceListName];
+        }
+        lists[name] = entries;
+        const saved = saveSuperSentenceLists(lists);
+        if (!saved) {
+            alert('Could not save this sentence list — storage might be full. Try smaller/fewer pictures, or fewer sentences.');
+            return;
+        }
+
+        resetSentenceForm();
+        renderSuperSentenceListManager();
+    };
+
+    const getSuperSentencesForList = (name) => {
+        const lists = getSuperSentenceLists();
+        const entries = lists[name] || [];
+        return entries.map(e => ({ sentence: e.Sentence, blankIndex: e.BlankIndex, picture: e.Picture }));
     };
 
     const fetchWords = async (sheetName) => {
@@ -679,18 +1028,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 picture: wordData.picture,
                 hardMode: true,
                 letterIndex: 0,
-                correctLetter: word[0],
+                correctAnswer: word[0],
                 options: generateLetterOptions(word[0]),
             };
         }
 
         const missingIndex = Math.floor(Math.random() * (word.length - 2)) + 1;
-        const correctLetter = word[missingIndex];
+        const correctAnswer = word[missingIndex];
         return {
             word,
             missingIndex,
-            correctLetter,
-            options: generateLetterOptions(correctLetter),
+            correctAnswer,
+            options: generateLetterOptions(correctAnswer),
             picture: wordData.picture,
             hardMode: false,
         };
@@ -705,8 +1054,35 @@ document.addEventListener('DOMContentLoaded', () => {
             word,
             picture: wordData.picture,
             wordPowerMode: true,
-            correctWord: word,
+            correctAnswer: word,
             options: shuffleArray([word, ...decoys]),
+        };
+    };
+
+    // Strip leading/trailing punctuation so a blank word like "badminton." compares
+    // and displays cleanly as "badminton" in bubbles/lanes.
+    const cleanSentenceWord = (token) => token.replace(/^[^\w]+|[^\w]+$/g, '');
+
+    const generateSentenceQuestion = (entry, allEntries) => {
+        const tokens = tokenizeSentence(entry.sentence);
+        const correctAnswer = cleanSentenceWord(tokens[entry.blankIndex]);
+
+        const decoyPool = [...new Set(
+            allEntries
+                .map(e => cleanSentenceWord(tokenizeSentence(e.sentence)[e.blankIndex]))
+                .filter(w => w.toLowerCase() !== correctAnswer.toLowerCase())
+        )];
+        const decoys = shuffleArray(decoyPool).slice(0, 2);
+
+        return {
+            word: correctAnswer,
+            sentenceMode: true,
+            tokens,
+            blankIndex: entry.blankIndex,
+            picture: entry.picture,
+            wordPowerMode: state.gameMode === 'stayInLane',
+            correctAnswer,
+            options: shuffleArray([correctAnswer, ...decoys]),
         };
     };
 
@@ -771,7 +1147,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const now = performance.now();
                 const handResults = handLandmarker.detectForVideo(ui.videoElement, now);
                 // Pose is only needed (and only run) during active Word Power gameplay, to save compute.
-                const needsPose = poseLandmarker && state.gameActive && state.gameMode === 'wordPower';
+                const needsPose = poseLandmarker && state.gameActive && state.gameMode === 'stayInLane';
                 const poseResults = needsPose ? poseLandmarker.detectForVideo(ui.videoElement, now) : null;
                 onDetectionResults(handResults, poseResults);
             }
@@ -816,9 +1192,9 @@ document.addEventListener('DOMContentLoaded', () => {
         state.multiHandLandmarks = handResults.landmarks || [];
         state.poseLandmarks = (poseResults && poseResults.landmarks && poseResults.landmarks[0]) || null;
 
-        const isWordPower = state.gameMode === 'wordPower';
-        const tracked = isWordPower ? !!state.poseLandmarks : state.multiHandLandmarks.length > 0;
-        ui.handStatusLabel.textContent = isWordPower ? 'Body' : 'Hand';
+        const isStayInLane = state.gameMode === 'stayInLane';
+        const tracked = isStayInLane ? !!state.poseLandmarks : state.multiHandLandmarks.length > 0;
+        ui.handStatusLabel.textContent = isStayInLane ? 'Body' : 'Hand';
         ui.handStatus.textContent = tracked ? 'Yes' : 'No';
 
         for (const landmarks of state.multiHandLandmarks) {
@@ -829,8 +1205,8 @@ document.addEventListener('DOMContentLoaded', () => {
             drawingUtils.drawConnectors(state.poseLandmarks, PoseLandmarker.POSE_CONNECTIONS, { color: '#00BFFF', lineWidth: 3 });
         }
 
-        if (state.gameActive && !state.waitingForNextQuestion) {
-            if (isWordPower) {
+        if (state.gameActive && !state.waitingForNextQuestion && !state.inputLocked) {
+            if (isStayInLane) {
                 if (state.poseLandmarks) {
                     updateWordPowerZones(dt);
                 } else {
@@ -841,7 +1217,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        if (isWordPower) {
+        if (isStayInLane) {
             drawWordZones();
         } else {
             drawLetterBubbles();
@@ -849,6 +1225,42 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.restore();
     }
 
+    // --- 5f-i. Ready Countdown (3, 2, 1) ---
+    const cancelCountdown = () => {
+        if (state.countdownInterval) {
+            clearInterval(state.countdownInterval);
+            state.countdownInterval = null;
+        }
+        ui.countdownOverlay.style.display = 'none';
+        state.inputLocked = false;
+    };
+
+    const runCountdown = (onDone) => {
+        state.inputLocked = true;
+        let i = 0;
+
+        const showStep = () => {
+            ui.countdownOverlay.textContent = READY_COUNTDOWN_STEPS[i];
+            ui.countdownOverlay.style.display = 'flex';
+            ui.countdownOverlay.classList.remove('pop');
+            void ui.countdownOverlay.offsetWidth; // restart the pop animation
+            ui.countdownOverlay.classList.add('pop');
+        };
+
+        showStep();
+        state.countdownInterval = setInterval(() => {
+            i++;
+            if (i < READY_COUNTDOWN_STEPS.length) {
+                showStep();
+            } else {
+                clearInterval(state.countdownInterval);
+                state.countdownInterval = null;
+                ui.countdownOverlay.style.display = 'none';
+                state.inputLocked = false;
+                onDone();
+            }
+        }, READY_COUNTDOWN_STEP_MS);
+    };
 
     // --- 5f. Game Logic ---
     const loadQuestion = (question) => {
@@ -857,18 +1269,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (question.wordPowerMode) {
             state.letterBubbles = [];
-            displayWordPowerBlank(question);
-            setupWordZones(question.options, question.correctWord);
+            setupWordZones(question.options, question.correctAnswer);
         } else {
             state.wordZones = [];
             state.activeZoneIndex = -1;
-            state.correctLetter = question.correctLetter;
+            state.correctAnswer = question.correctAnswer;
+            createBubbles(question.options);
+        }
 
-            if (question.hardMode) {
-                displaySpellingWord(question.word, question.letterIndex);
-            } else {
-                displayWord(question.word, question.missingIndex);
-            }
+        // Content display: a sentence-with-blank takes priority over the word/spelling display.
+        if (question.sentenceMode) {
+            displaySentenceBlank(question.tokens, question.blankIndex);
+        } else if (question.wordPowerMode) {
+            displayWordPowerBlank(question);
+        } else if (question.hardMode) {
+            displaySpellingWord(question.word, question.letterIndex);
+        } else {
+            displayWord(question.word, question.missingIndex);
         }
 
         if (question.picture) {
@@ -889,11 +1306,14 @@ document.addEventListener('DOMContentLoaded', () => {
             ui.imagePlaceholder.style.display = 'none';
             ui.wordImage.src = '';
         }
-    
-        if (!question.wordPowerMode) {
-            createLetterBubbles(question.options);
-        }
+
         ui.questionCounter.textContent = `${state.currentQuestionIndex + 1}/${state.selectedQuestions.length}`;
+
+        // Stay in Lane gets a fresh 3-2-1 countdown before every question, so players
+        // have time to step back to a neutral spot before the lanes go live.
+        if (question.wordPowerMode) {
+            runCountdown(() => {});
+        }
     };
 
     const checkBubbleCollision = () => {
@@ -913,7 +1333,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const distance = Math.hypot(indexFinger.x - bubble.x, indexFinger.y - bubble.y);
                 if (distance < bubble.radius) {
                     handleBubblePop(bubble);
-                    return; 
+                    return;
                 }
             }
         }
@@ -952,8 +1372,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (question.hardMode && question.letterIndex < question.word.length - 1) {
                 showFeedback("Correct! 🎉", true);
                 question.letterIndex++;
-                question.correctLetter = question.word[question.letterIndex];
-                question.options = generateLetterOptions(question.correctLetter);
+                question.correctAnswer = question.word[question.letterIndex];
+                question.options = generateLetterOptions(question.correctAnswer);
 
                 setTimeout(() => loadQuestion(question), 900);
                 return;
@@ -969,9 +1389,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- 5g. Word Power (zone-based) Logic ---
-    const setupWordZones = (options, correctWord) => {
-        state.wordZones = options.map(word => ({ word, isCorrect: word === correctWord, dwellProgress: 0 }));
+    // --- 5g. Stay in Lane (lane-based) Logic ---
+    const setupWordZones = (options, correctAnswer) => {
+        state.wordZones = options.map(word => ({ word, isCorrect: word === correctAnswer, dwellProgress: 0 }));
         state.activeZoneIndex = -1;
     };
 
@@ -1032,69 +1452,99 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.startScreenDescription.textContent = 'Fetching quiz words...';
         ui.startBtn.style.display = 'none';
 
-        const words = await fetchWords(state.selectedLevelName);
-        if (words.length === 0) {
-            ui.startScreenTitle.textContent = 'Error!';
-            ui.startScreenDescription.textContent = 'Could not load words for this level.';
-            ui.startBtn.textContent = 'Back to Levels';
-            ui.startBtn.onclick = showLevelSelectionScreen;
-            ui.startBtn.style.display = 'block';
-            return;
+        const isStayInLane = state.gameMode === 'stayInLane';
+        let buildQuestion;
+        let sourceItems;
+
+        if (state.selectedContentType === 'sentence') {
+            sourceItems = getSuperSentencesForList(state.selectedLevelName);
+            if (sourceItems.length < 3) {
+                ui.startScreenTitle.textContent = 'Not Enough Sentences!';
+                ui.startScreenDescription.textContent = 'Super Sentence needs at least 3 sentences in a list. Please add more.';
+                ui.startBtn.textContent = 'Back to Levels';
+                ui.startBtn.onclick = showLevelSelectionScreen;
+                ui.startBtn.style.display = 'block';
+                return;
+            }
+            buildQuestion = (entry) => generateSentenceQuestion(entry, sourceItems);
+        } else {
+            const words = await fetchWords(state.selectedLevelName);
+            if (words.length === 0) {
+                ui.startScreenTitle.textContent = 'Error!';
+                ui.startScreenDescription.textContent = 'Could not load words for this level.';
+                ui.startBtn.textContent = 'Back to Levels';
+                ui.startBtn.onclick = showLevelSelectionScreen;
+                ui.startBtn.style.display = 'block';
+                return;
+            }
+
+            if (isStayInLane && words.length < 3) {
+                ui.startScreenTitle.textContent = 'Not Enough Words!';
+                ui.startScreenDescription.textContent = 'Stay in Lane needs at least 3 words in a level. Please add more words or pick another level.';
+                ui.startBtn.textContent = 'Back to Levels';
+                ui.startBtn.onclick = showLevelSelectionScreen;
+                ui.startBtn.style.display = 'block';
+                return;
+            }
+
+            sourceItems = words;
+            buildQuestion = isStayInLane
+                ? (wordData) => generateWordPowerQuestion(wordData, words)
+                : generateQuestionData;
         }
 
-        if (state.gameMode === 'wordPower' && words.length < 3) {
-            ui.startScreenTitle.textContent = 'Not Enough Words!';
-            ui.startScreenDescription.textContent = 'Word Power needs at least 3 words in a level. Please add more words or pick another level.';
-            ui.startBtn.textContent = 'Back to Levels';
-            ui.startBtn.onclick = showLevelSelectionScreen;
-            ui.startBtn.style.display = 'block';
-            return;
-        }
-
-        const buildQuestion = state.gameMode === 'wordPower'
-            ? (wordData) => generateWordPowerQuestion(wordData, words)
-            : generateQuestionData;
-
-        state.selectedQuestions = shuffleArray(words.map(buildQuestion)).slice(0, 10);
+        state.selectedQuestions = shuffleArray(sourceItems.map(buildQuestion)).slice(0, 10);
         state.score = 0;
         state.currentQuestionIndex = 0;
         state.gameActive = true;
         ui.score.textContent = state.score;
         ui.mainMenuBtn.style.display = 'block';
-        
-        resetTimer();
-        startTimer();
 
+        resetTimer();
         showScreen(null); // Hide all major screens
-        loadQuestion(state.selectedQuestions[0]);
+
+        const firstQuestion = state.selectedQuestions[0];
+        if (isStayInLane) {
+            // Stay in Lane shows its own countdown before every question, including the first.
+            startTimer();
+            loadQuestion(firstQuestion);
+        } else {
+            // Point and Pop: show the first question right away (so players can see it),
+            // but keep it locked behind a single 3-2-1 countdown before gameplay begins.
+            loadQuestion(firstQuestion);
+            runCountdown(() => startTimer());
+        }
     };
 
     const endGame = () => {
         state.gameActive = false;
         stopTimer();
+        cancelCountdown();
         ui.finalScore.textContent = state.score;
         document.querySelector('#game-over p').innerHTML = `Your score: <span id="final-score">${state.score}</span>/${state.selectedQuestions.length}`;
         showScreen(ui.gameOverScreen);
         ui.mainMenuBtn.style.display = 'none';
     };
-    
-    const selectLevel = (levelName) => {
+
+    const selectLevel = (levelName, contentType = 'words') => {
         state.selectedLevelName = levelName;
+        state.selectedContentType = contentType;
         ui.startScreenTitle.textContent = `✏️ PopAR Kit 2.0 - ${levelName} ✏️`;
-        ui.startScreenDescription.textContent = state.gameMode === 'wordPower'
-            ? 'Move into the left, middle, or right zone with the correct word and hold still!'
-            : 'Use your index finger to pop the correct letter bubble!';
+        ui.startScreenDescription.textContent = state.gameMode === 'stayInLane'
+            ? 'Move into the left, middle, or right lane with the correct word and hold still!'
+            : 'Use your index finger to pop the correct letter or word bubble!';
         ui.startBtn.textContent = 'Start Quiz';
         ui.startBtn.onclick = startGame;
         ui.startBtn.style.display = 'block'; // Ensure the start button is visible
         showScreen(ui.startScreen);
     };
-    
+
     const showLevelSelectionScreen = () => {
         state.gameActive = false;
         state.letterBubbles = [];
         state.wordZones = [];
         state.activeZoneIndex = -1;
+        cancelCountdown();
         ui.wordContainer.innerHTML = '';
         ui.imagePlaceholder.style.display = 'none';
         ui.wordImage.style.display = 'none';
@@ -1103,7 +1553,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.timerContainer.style.display = 'none';
         resetTimer();
 
-        ui.difficultySettingsSection.style.display = state.gameMode === 'wordPower' ? 'none' : 'block';
+        ui.difficultySettingsSection.style.display = state.gameMode === 'stayInLane' ? 'none' : 'block';
 
         // Populate the preset level dropdown
         ui.levelSelect.innerHTML = '<option value="" disabled selected>Select a level...</option>';
@@ -1121,8 +1571,19 @@ document.addEventListener('DOMContentLoaded', () => {
             const button = document.createElement('button');
             button.className = 'btn';
             button.textContent = level;
-            button.onclick = () => { playSound(audio.buttonClick); selectLevel(level); };
+            button.onclick = () => { playSound(audio.buttonClick); selectLevel(level, 'words'); };
             ui.customLevelButtonsContainer.appendChild(button);
+        });
+
+        // Populate Super Sentence list buttons
+        ui.superSentenceButtonsContainer.innerHTML = '';
+        const sentenceListNames = Object.keys(getSuperSentenceLists());
+        sentenceListNames.forEach(name => {
+            const button = document.createElement('button');
+            button.className = 'btn';
+            button.textContent = name;
+            button.onclick = () => { playSound(audio.buttonClick); selectLevel(name, 'sentence'); };
+            ui.superSentenceButtonsContainer.appendChild(button);
         });
 
         showScreen(ui.levelSelectionScreen);
@@ -1175,14 +1636,40 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         ui.removePendingImageBtn.addEventListener('click', () => { playSound(audio.buttonClick); clearPendingImage(); });
 
-        [ui.modeLetterBubbleBtn, ui.modeWordPowerBtn].forEach(btn => {
+        ui.mySentencesBtn.addEventListener('click', () => { playSound(audio.buttonClick); showSuperSentenceScreen(); });
+        ui.backToLevelsFromSentenceBtn.addEventListener('click', () => { playSound(audio.buttonClick); showLevelSelectionScreen(); });
+        ui.saveSentenceListBtn.addEventListener('click', handleSaveSentenceList);
+        ui.cancelSentenceEditBtn.addEventListener('click', () => { playSound(audio.buttonClick); handleCancelSentenceEdit(); });
+
+        ui.sentenceInput.addEventListener('input', () => {
+            state.pendingSentenceSelectedIndex = -1;
+            renderSentenceWordPicker();
+        });
+        ui.addSentenceBtn.addEventListener('click', () => { playSound(audio.buttonClick); handleAddSentence(); });
+
+        ui.sentenceWordImageInput.addEventListener('change', async () => {
+            const file = ui.sentenceWordImageInput.files[0];
+            if (!file) return;
+            try {
+                state.pendingSentenceImageDataUrl = await resizeImageToDataUrl(file);
+                ui.sentencePendingImageThumb.src = state.pendingSentenceImageDataUrl;
+                ui.sentencePendingImagePreview.style.display = 'flex';
+            } catch (e) {
+                console.warn('Could not process image:', e);
+                alert('Could not load that picture. Please try a different image.');
+                clearPendingSentenceImage();
+            }
+        });
+        ui.sentenceRemoveImageBtn.addEventListener('click', () => { playSound(audio.buttonClick); clearPendingSentenceImage(); });
+
+        [ui.modePointAndPopBtn, ui.modeStayInLaneBtn].forEach(btn => {
             btn.addEventListener('click', () => {
                 playSound(audio.buttonClick);
-                state.gameMode = btn.id === 'mode-word-power-btn' ? 'wordPower' : 'letterBubble';
-                ui.modeLetterBubbleBtn.classList.toggle('active', state.gameMode === 'letterBubble');
-                ui.modeWordPowerBtn.classList.toggle('active', state.gameMode === 'wordPower');
+                state.gameMode = btn.id === 'mode-stay-in-lane-btn' ? 'stayInLane' : 'pointAndPop';
+                ui.modePointAndPopBtn.classList.toggle('active', state.gameMode === 'pointAndPop');
+                ui.modeStayInLaneBtn.classList.toggle('active', state.gameMode === 'stayInLane');
                 ui.gameModeHint.textContent = GAME_MODE_HINTS[state.gameMode];
-                ui.difficultySettingsSection.style.display = state.gameMode === 'wordPower' ? 'none' : 'block';
+                ui.difficultySettingsSection.style.display = state.gameMode === 'stayInLane' ? 'none' : 'block';
             });
         });
 
