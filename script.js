@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const BASE_OPENSHEET_URL = `https://opensheet.elk.sh/${GOOGLE_SHEET_ID}/`;
     const AVAILABLE_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "The Password"];
     const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
+    const WORD_POWER_DWELL_MS = 800; // how long to hold a zone to confirm the answer
     const COUNTDOWN_TIME = 60; // seconds
     const MEDIAPIPE_HANDS_CONFIG = {
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1635986972/${file}`
@@ -57,6 +58,10 @@ document.addEventListener('DOMContentLoaded', () => {
         backToLevelsBtn: document.getElementById('back-to-levels-btn'),
         easyModeBtn: document.getElementById('easy-mode-btn'),
         hardModeBtn: document.getElementById('hard-mode-btn'),
+        difficultySettingsSection: document.getElementById('difficulty-settings-section'),
+        modeLetterBubbleBtn: document.getElementById('mode-letter-bubble-btn'),
+        modeWordPowerBtn: document.getElementById('mode-word-power-btn'),
+        gameModeHint: document.getElementById('game-mode-hint'),
         stopwatchBtn: document.getElementById('stopwatch-btn'),
         countdownBtn: document.getElementById('countdown-btn'),
         noTimerBtn: document.getElementById('no-timer-btn'),
@@ -107,6 +112,15 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingImageDataUrl: null,
         editingListName: null,
         difficulty: 'easy', // 'easy' or 'hard'
+        gameMode: 'letterBubble', // 'letterBubble' or 'wordPower'
+        wordZones: [],
+        activeZoneIndex: -1,
+        lastFrameTime: 0,
+    };
+
+    const GAME_MODE_HINTS = {
+        letterBubble: 'Pop the bubble with the missing letter!',
+        wordPower: 'Move into the zone with the correct word and hold still!',
     };
 
     const hands = new Hands(MEDIAPIPE_HANDS_CONFIG);
@@ -163,6 +177,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('');
     };
 
+    const displayWordPowerBlank = (question) => {
+        const { word, picture } = question;
+        // With a picture, the whole word stays hidden — the picture is the only clue.
+        // Without a picture, reveal the first letter so the guess is fair among 3 word options.
+        ui.wordContainer.innerHTML = word.split('').map((letter, i) => {
+            if (!picture && i === 0) return `<div class="letter-box">${letter}</div>`;
+            return `<div class="letter-box pending"></div>`;
+        }).join('');
+    };
+
     const createLetterBubbles = (options) => {
         const { width: canvasWidth, height: canvasHeight } = ui.outputCanvas;
         const bubbleRadius = Math.min(canvasWidth, canvasHeight) * 0.05;
@@ -211,6 +235,62 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
     
+    const fitFontSize = (ctx, text, maxWidth, maxFontSize) => {
+        let fontSize = maxFontSize;
+        ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+        while (ctx.measureText(text).width > maxWidth && fontSize > 10) {
+            fontSize -= 2;
+            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+        }
+        return fontSize;
+    };
+
+    const drawWordZones = () => {
+        if (!state.wordZones || state.wordZones.length === 0) return;
+        const { ctx, outputCanvas } = ui;
+        const zoneCount = state.wordZones.length;
+        const zoneWidth = outputCanvas.width / zoneCount;
+
+        state.wordZones.forEach((zone, i) => {
+            const x = i * zoneWidth;
+            const isActive = i === state.activeZoneIndex;
+            const progress = isActive ? Math.min(zone.dwellProgress / WORD_POWER_DWELL_MS, 1) : 0;
+
+            ctx.save();
+            ctx.fillStyle = isActive ? 'rgba(52, 152, 219, 0.35)' : 'rgba(255, 255, 255, 0.1)';
+            ctx.fillRect(x, 0, zoneWidth, outputCanvas.height);
+
+            if (i > 0) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, outputCanvas.height);
+                ctx.stroke();
+            }
+
+            if (progress > 0) {
+                const barHeight = 14;
+                ctx.fillStyle = 'rgba(46, 204, 113, 0.9)';
+                ctx.fillRect(x + 8, outputCanvas.height - barHeight - 8, (zoneWidth - 16) * progress, barHeight);
+            }
+
+            const centerX = x + zoneWidth / 2;
+            const centerY = outputCanvas.height / 2;
+            const maxTextWidth = zoneWidth - 24;
+            const fontSize = fitFontSize(ctx, zone.word, maxTextWidth, Math.min(zoneWidth * 0.16, 32));
+
+            ctx.fillStyle = '#fff';
+            ctx.font = `bold ${fontSize}px Comic Sans MS, Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            // Counter-flip so the word reads correctly under the mirrored canvas
+            ctx.scale(-1, 1);
+            ctx.fillText(zone.word, -centerX, centerY);
+            ctx.restore();
+        });
+    };
+
     const showFeedback = (message, isCorrect) => {
         ui.feedback.textContent = message;
         ui.feedback.className = `feedback ${isCorrect ? 'correct' : 'incorrect'}`;
@@ -583,6 +663,20 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     };
 
+    const generateWordPowerQuestion = (wordData, allWords) => {
+        const word = wordData.word;
+        const decoyPool = [...new Set(allWords.map(w => w.word).filter(w => w !== word))];
+        const decoys = shuffleArray(decoyPool).slice(0, 2);
+
+        return {
+            word,
+            picture: wordData.picture,
+            wordPowerMode: true,
+            correctWord: word,
+            options: shuffleArray([word, ...decoys]),
+        };
+    };
+
     // --- 5d. Timer Functions ---
     const formatTime = (seconds) => {
         const minutes = Math.floor(seconds / 60);
@@ -661,6 +755,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     function onHandResults(results) {
         const { ctx, outputCanvas } = ui;
+        const now = performance.now();
+        const dt = now - (state.lastFrameTime || now);
+        state.lastFrameTime = now;
+
         ctx.save();
         ctx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
         ctx.drawImage(results.image, 0, 0, outputCanvas.width, outputCanvas.height);
@@ -674,28 +772,46 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.drawLandmarks(ctx, landmarks, { color: '#FF0000', radius: 3 });
             }
             if (state.gameActive && !state.waitingForNextQuestion) {
-                checkBubbleCollision();
+                if (state.gameMode === 'wordPower') {
+                    updateWordPowerZones(dt);
+                } else {
+                    checkBubbleCollision();
+                }
             }
         } else {
             ui.handStatus.textContent = "No";
+            resetWordZoneDwell();
         }
 
-        drawLetterBubbles();
+        if (state.gameMode === 'wordPower') {
+            drawWordZones();
+        } else {
+            drawLetterBubbles();
+        }
         ctx.restore();
     }
     
     // --- 5f. Game Logic ---
     const loadQuestion = (question) => {
         state.currentWord = question.word;
-        state.correctLetter = question.correctLetter;
         state.waitingForNextQuestion = false;
 
-        if (question.hardMode) {
-            displaySpellingWord(question.word, question.letterIndex);
+        if (question.wordPowerMode) {
+            state.letterBubbles = [];
+            displayWordPowerBlank(question);
+            setupWordZones(question.options, question.correctWord);
         } else {
-            displayWord(question.word, question.missingIndex);
+            state.wordZones = [];
+            state.activeZoneIndex = -1;
+            state.correctLetter = question.correctLetter;
+
+            if (question.hardMode) {
+                displaySpellingWord(question.word, question.letterIndex);
+            } else {
+                displayWord(question.word, question.missingIndex);
+            }
         }
-    
+
         if (question.picture) {
             const wordContainerHeight = ui.wordContainer.offsetHeight;
             ui.imagePlaceholder.style.height = `${wordContainerHeight * 1.5}px`;
@@ -715,7 +831,9 @@ document.addEventListener('DOMContentLoaded', () => {
             ui.wordImage.src = '';
         }
     
-        createLetterBubbles(question.options);
+        if (!question.wordPowerMode) {
+            createLetterBubbles(question.options);
+        }
         ui.questionCounter.textContent = `${state.currentQuestionIndex + 1}/${state.selectedQuestions.length}`;
     };
 
@@ -742,6 +860,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    const finishQuestion = (isCorrect) => {
+        if (isCorrect) {
+            state.score++;
+            ui.score.textContent = state.score;
+            showFeedback("Correct! 🎉", true);
+        } else {
+            showFeedback("Try again! 🤔", false);
+        }
+
+        setTimeout(() => {
+            state.currentQuestionIndex++;
+            if (state.currentQuestionIndex < state.selectedQuestions.length) {
+                loadQuestion(state.selectedQuestions[state.currentQuestionIndex]);
+            } else {
+                endGame();
+            }
+        }, 1500);
+    };
+
     const handleBubblePop = (bubble) => {
         bubble.popped = true;
         state.waitingForNextQuestion = true;
@@ -766,22 +903,64 @@ document.addEventListener('DOMContentLoaded', () => {
             if (question.hardMode) {
                 displaySpellingWord(question.word, question.word.length);
             }
-            state.score++;
-            ui.score.textContent = state.score;
-            showFeedback("Correct! 🎉", true);
+            finishQuestion(true);
         } else {
-            showFeedback("Try again! 🤔", false);
             playSound(audio.wrongAnswer);
+            finishQuestion(false);
+        }
+    };
+
+    // --- 5g. Word Power (zone-based) Logic ---
+    const setupWordZones = (options, correctWord) => {
+        state.wordZones = options.map(word => ({ word, isCorrect: word === correctWord, dwellProgress: 0 }));
+        state.activeZoneIndex = -1;
+    };
+
+    const resetWordZoneDwell = () => {
+        if (!state.wordZones) return;
+        state.wordZones.forEach(z => z.dwellProgress = 0);
+        state.activeZoneIndex = -1;
+    };
+
+    const handleWordZoneSelect = (zone) => {
+        state.waitingForNextQuestion = true;
+        playSound(audio.popBubble);
+        playSound(zone.isCorrect ? audio.correctAnswer : audio.wrongAnswer);
+        finishQuestion(zone.isCorrect);
+    };
+
+    const updateWordPowerZones = (dt) => {
+        if (!state.wordZones || state.wordZones.length === 0) return;
+
+        // Use the average x-position of all visible hand landmarks as a stand-in
+        // for "which zone the player is standing in" (this app tracks hands, not full body).
+        let sumX = 0, count = 0;
+        for (const landmarks of state.multiHandLandmarks) {
+            for (const lm of landmarks) {
+                sumX += lm.x * ui.outputCanvas.width;
+                count++;
+            }
+        }
+        if (count === 0) {
+            resetWordZoneDwell();
+            return;
+        }
+        const avgX = sumX / count;
+
+        const zoneWidth = ui.outputCanvas.width / state.wordZones.length;
+        let zoneIndex = Math.floor(avgX / zoneWidth);
+        zoneIndex = Math.max(0, Math.min(state.wordZones.length - 1, zoneIndex));
+
+        if (zoneIndex !== state.activeZoneIndex) {
+            state.wordZones.forEach(z => z.dwellProgress = 0);
+            state.activeZoneIndex = zoneIndex;
         }
 
-        setTimeout(() => {
-            state.currentQuestionIndex++;
-            if (state.currentQuestionIndex < state.selectedQuestions.length) {
-                loadQuestion(state.selectedQuestions[state.currentQuestionIndex]);
-            } else {
-                endGame();
-            }
-        }, 1500);
+        state.wordZones[zoneIndex].dwellProgress += dt;
+
+        if (state.wordZones[zoneIndex].dwellProgress >= WORD_POWER_DWELL_MS) {
+            handleWordZoneSelect(state.wordZones[zoneIndex]);
+        }
     };
 
     const startGame = async () => {
@@ -805,7 +984,20 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        state.selectedQuestions = shuffleArray(words.map(generateQuestionData)).slice(0, 10);
+        if (state.gameMode === 'wordPower' && words.length < 3) {
+            ui.startScreenTitle.textContent = 'Not Enough Words!';
+            ui.startScreenDescription.textContent = 'Word Power needs at least 3 words in a level. Please add more words or pick another level.';
+            ui.startBtn.textContent = 'Back to Levels';
+            ui.startBtn.onclick = showLevelSelectionScreen;
+            ui.startBtn.style.display = 'block';
+            return;
+        }
+
+        const buildQuestion = state.gameMode === 'wordPower'
+            ? (wordData) => generateWordPowerQuestion(wordData, words)
+            : generateQuestionData;
+
+        state.selectedQuestions = shuffleArray(words.map(buildQuestion)).slice(0, 10);
         state.score = 0;
         state.currentQuestionIndex = 0;
         state.gameActive = true;
@@ -831,7 +1023,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const selectLevel = (levelName) => {
         state.selectedLevelName = levelName;
         ui.startScreenTitle.textContent = `✏️ PopAR Kit 2.0 - ${levelName} ✏️`;
-        ui.startScreenDescription.textContent = 'Use your index finger to pop the correct letter bubble!';
+        ui.startScreenDescription.textContent = state.gameMode === 'wordPower'
+            ? 'Move into the left, middle, or right zone with the correct word and hold still!'
+            : 'Use your index finger to pop the correct letter bubble!';
         ui.startBtn.textContent = 'Start Quiz';
         ui.startBtn.onclick = startGame;
         ui.startBtn.style.display = 'block'; // Ensure the start button is visible
@@ -841,6 +1035,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const showLevelSelectionScreen = () => {
         state.gameActive = false;
         state.letterBubbles = [];
+        state.wordZones = [];
+        state.activeZoneIndex = -1;
         ui.wordContainer.innerHTML = '';
         ui.imagePlaceholder.style.display = 'none';
         ui.wordImage.style.display = 'none';
@@ -848,7 +1044,9 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.mainMenuBtn.style.display = 'none';
         ui.timerContainer.style.display = 'none';
         resetTimer();
-        
+
+        ui.difficultySettingsSection.style.display = state.gameMode === 'wordPower' ? 'none' : 'block';
+
         // Populate the preset level dropdown
         ui.levelSelect.innerHTML = '<option value="" disabled selected>Select a level...</option>';
         AVAILABLE_LEVELS.forEach(level => {
@@ -918,6 +1116,17 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         ui.removePendingImageBtn.addEventListener('click', () => { playSound(audio.buttonClick); clearPendingImage(); });
+
+        [ui.modeLetterBubbleBtn, ui.modeWordPowerBtn].forEach(btn => {
+            btn.addEventListener('click', () => {
+                playSound(audio.buttonClick);
+                state.gameMode = btn.id === 'mode-word-power-btn' ? 'wordPower' : 'letterBubble';
+                ui.modeLetterBubbleBtn.classList.toggle('active', state.gameMode === 'letterBubble');
+                ui.modeWordPowerBtn.classList.toggle('active', state.gameMode === 'wordPower');
+                ui.gameModeHint.textContent = GAME_MODE_HINTS[state.gameMode];
+                ui.difficultySettingsSection.style.display = state.gameMode === 'wordPower' ? 'none' : 'block';
+            });
+        });
 
         [ui.easyModeBtn, ui.hardModeBtn].forEach(btn => {
             btn.addEventListener('click', () => {

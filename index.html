@@ -48,6 +48,18 @@
             <div class="level-selection-screen" id="level-selection-screen" style="display: none;">
                 <h1>PopAR Kit 2.0</h1>
 
+                <div class="game-mode-selector" id="game-mode-selector">
+                    <button class="game-mode-btn active" id="mode-letter-bubble-btn" type="button">
+                        <span class="game-mode-icon">🫧</span>
+                        <span class="game-mode-label">Letter Bubble</span>
+                    </button>
+                    <button class="game-mode-btn" id="mode-word-power-btn" type="button">
+                        <span class="game-mode-icon">💪</span>
+                        <span class="game-mode-label">Word Power</span>
+                    </button>
+                </div>
+                <p class="game-mode-hint" id="game-mode-hint">Pop the bubble with the missing letter!</p>
+
                 <div class="menu-scroll-area">
 
                 <div class="menu-section">
@@ -69,12 +81,14 @@
 
                 <details class="menu-settings">
                     <summary>⚙️ Settings</summary>
-                    <div class="settings-subsection-title">Difficulty</div>
-                    <div class="timer-selection-container">
-                        <button class="btn timer-btn active" id="easy-mode-btn">Easy</button>
-                        <button class="btn timer-btn" id="hard-mode-btn">Hard</button>
+                    <div id="difficulty-settings-section">
+                        <div class="settings-subsection-title">Difficulty</div>
+                        <div class="timer-selection-container">
+                            <button class="btn timer-btn active" id="easy-mode-btn">Easy</button>
+                            <button class="btn timer-btn" id="hard-mode-btn">Hard</button>
+                        </div>
+                        <p class="settings-hint">Hard: for questions with a picture, spell the whole word instead of just the missing letter.</p>
                     </div>
-                    <p class="settings-hint">Hard: for questions with a picture, spell the whole word instead of just the missing letter.</p>
                     <div class="settings-subsection-title">Timer</div>
                     <div class="timer-selection-container">
                         <button class="btn timer-btn" id="stopwatch-btn">Stopwatch</button>

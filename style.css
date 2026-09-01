@@ -176,6 +176,58 @@
             flex-shrink: 0;
         }
 
+        .game-mode-selector {
+            display: flex;
+            gap: 10px;
+            flex-shrink: 0;
+            position: relative;
+            z-index: 1;
+        }
+
+        .game-mode-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 2px solid rgba(255, 255, 255, 0.18);
+            color: white;
+            border-radius: 16px;
+            padding: 8px 20px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.2s ease;
+        }
+
+        .game-mode-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .game-mode-btn .game-mode-icon {
+            font-size: 22px;
+        }
+
+        .game-mode-btn .game-mode-label {
+            font-size: clamp(12px, 1.8vmin, 14px);
+            font-weight: bold;
+        }
+
+        .game-mode-btn.active {
+            background: linear-gradient(45deg, #FF8E53, #FE6B8B);
+            border-color: transparent;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.25);
+        }
+
+        .game-mode-hint {
+            font-size: 13px;
+            opacity: 0.75;
+            margin: 8px 0 0;
+            text-align: center;
+            flex-shrink: 0;
+            position: relative;
+            z-index: 1;
+        }
+
         .menu-scroll-area {
             width: 100%;
             flex: 1;
