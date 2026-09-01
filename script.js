@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const GOOGLE_SHEET_ID = '1ZMEfBGZQHGf-UVvNJj8D7cOhQ3M2Z2cYNBrNMT4pnn0';
     const BASE_OPENSHEET_URL = `https://opensheet.elk.sh/${GOOGLE_SHEET_ID}/`;
     const AVAILABLE_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "The Password"];
+    const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
     const COUNTDOWN_TIME = 60; // seconds
     const MEDIAPIPE_HANDS_CONFIG = {
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1635986972/${file}`
@@ -34,7 +35,26 @@ document.addEventListener('DOMContentLoaded', () => {
         restartBtn: document.getElementById('restart-btn'),
         sheetNameInput: document.getElementById('sheet-name-input'),
         goBtn: document.getElementById('go-btn'),
-        levelButtonsContainer: document.getElementById('level-buttons-container'),
+        levelSelect: document.getElementById('level-select'),
+        playLevelBtn: document.getElementById('play-level-btn'),
+        customLevelButtonsContainer: document.getElementById('custom-level-buttons-container'),
+        myWordsBtn: document.getElementById('my-words-btn'),
+        customWordsScreen: document.getElementById('custom-words-screen'),
+        customListContainer: document.getElementById('custom-list-container'),
+        customListNameInput: document.getElementById('custom-list-name'),
+        customListWordsInput: document.getElementById('custom-list-words'),
+        singleWordInput: document.getElementById('single-word-input'),
+        singleWordImageInput: document.getElementById('single-word-image'),
+        pendingImagePreview: document.getElementById('pending-image-preview'),
+        pendingImageThumb: document.getElementById('pending-image-thumb'),
+        removePendingImageBtn: document.getElementById('remove-pending-image-btn'),
+        addWordBtn: document.getElementById('add-word-btn'),
+        wordChipContainer: document.getElementById('word-chip-container'),
+        bulkModeToggle: document.getElementById('bulk-mode-toggle'),
+        wordEntrySingle: document.getElementById('word-entry-single'),
+        saveCustomListBtn: document.getElementById('save-custom-list-btn'),
+        cancelEditBtn: document.getElementById('cancel-edit-btn'),
+        backToLevelsBtn: document.getElementById('back-to-levels-btn'),
         stopwatchBtn: document.getElementById('stopwatch-btn'),
         countdownBtn: document.getElementById('countdown-btn'),
         noTimerBtn: document.getElementById('no-timer-btn'),
@@ -81,6 +101,9 @@ document.addEventListener('DOMContentLoaded', () => {
         timerInterval: null,
         deferredInstallPrompt: null,
         isInstallable: false,
+        pendingWords: [],
+        pendingImageDataUrl: null,
+        editingListName: null,
     };
 
     const hands = new Hands(MEDIAPIPE_HANDS_CONFIG);
@@ -91,7 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 5a. UI & Drawing Functions ---
     const showScreen = (screen) => {
-        [ui.cameraPermissionScreen, ui.levelSelectionScreen, ui.startScreen, ui.gameOverScreen].forEach(s => s.style.display = 'none');
+        [ui.cameraPermissionScreen, ui.levelSelectionScreen, ui.startScreen, ui.gameOverScreen, ui.customWordsScreen].forEach(s => s.style.display = 'none');
         
         ui.installButton.hidden = true;
 
@@ -216,7 +239,231 @@ document.addEventListener('DOMContentLoaded', () => {
         return array;
     };
 
+    // --- 5c-i. Custom (offline) Word Lists ---
+    const getCustomWordLists = () => {
+        try {
+            return JSON.parse(localStorage.getItem(CUSTOM_WORD_LISTS_KEY)) || {};
+        } catch (e) {
+            console.warn('Could not read custom word lists from localStorage:', e);
+            return {};
+        }
+    };
+
+    const saveCustomWordLists = (lists) => {
+        try {
+            localStorage.setItem(CUSTOM_WORD_LISTS_KEY, JSON.stringify(lists));
+            return true;
+        } catch (e) {
+            console.warn('Could not save custom word lists to localStorage:', e);
+            return false;
+        }
+    };
+
+    const resizeImageToDataUrl = (file, maxDim = 320, quality = 0.75) => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const img = new Image();
+                img.onload = () => {
+                    let { width, height } = img;
+                    if (width > height && width > maxDim) {
+                        height = Math.round(height * (maxDim / width));
+                        width = maxDim;
+                    } else if (height > maxDim) {
+                        width = Math.round(width * (maxDim / height));
+                        height = maxDim;
+                    }
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+                    resolve(canvas.toDataURL('image/jpeg', quality));
+                };
+                img.onerror = reject;
+                img.src = reader.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    };
+
+    const parseWordsInput = (text) => {
+        return text
+            .split(/[\n,]/)
+            .map(w => w.trim())
+            .filter(w => w.length > 1)
+            .map(w => ({ Word: w }));
+    };
+
+    const renderCustomListManager = () => {
+        const lists = getCustomWordLists();
+        const names = Object.keys(lists);
+        ui.customListContainer.innerHTML = '';
+
+        if (names.length === 0) {
+            ui.customListContainer.innerHTML = '<p style="opacity: 0.8;">No word lists yet. Add one below!</p>';
+            return;
+        }
+
+        names.forEach(name => {
+            const item = document.createElement('div');
+            item.className = 'custom-list-item' + (name === state.editingListName ? ' editing' : '');
+            item.innerHTML = `<span>${name} (${lists[name].length} words)</span>`;
+
+            const editBtn = document.createElement('button');
+            editBtn.className = 'edit-list-btn';
+            editBtn.textContent = '✏️';
+            editBtn.setAttribute('aria-label', `Edit ${name}`);
+            editBtn.onclick = () => { playSound(audio.buttonClick); handleEditList(name); };
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-list-btn';
+            deleteBtn.textContent = '✕';
+            deleteBtn.setAttribute('aria-label', `Delete ${name}`);
+            deleteBtn.onclick = () => {
+                playSound(audio.buttonClick);
+                const currentLists = getCustomWordLists();
+                delete currentLists[name];
+                saveCustomWordLists(currentLists);
+                if (state.editingListName === name) handleCancelEdit();
+                renderCustomListManager();
+            };
+
+            item.appendChild(editBtn);
+            item.appendChild(deleteBtn);
+            ui.customListContainer.appendChild(item);
+        });
+    };
+
+    const renderWordChips = () => {
+        ui.wordChipContainer.innerHTML = '';
+        state.pendingWords.forEach((entry, index) => {
+            const chip = document.createElement('div');
+            chip.className = 'word-chip';
+            const thumbHtml = entry.picture ? `<img class="word-chip-thumb" src="${entry.picture}" alt="">` : '';
+            chip.innerHTML = `${thumbHtml}<span>${entry.word}</span>`;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-word-btn';
+            removeBtn.textContent = '✕';
+            removeBtn.setAttribute('aria-label', `Remove ${entry.word}`);
+            removeBtn.onclick = () => {
+                state.pendingWords.splice(index, 1);
+                renderWordChips();
+            };
+
+            chip.appendChild(removeBtn);
+            ui.wordChipContainer.appendChild(chip);
+        });
+    };
+
+    const clearPendingImage = () => {
+        state.pendingImageDataUrl = null;
+        ui.singleWordImageInput.value = '';
+        ui.pendingImagePreview.style.display = 'none';
+    };
+
+    const handleAddWord = () => {
+        const word = ui.singleWordInput.value.trim();
+        if (word.length > 1) {
+            state.pendingWords.push({ word, picture: state.pendingImageDataUrl });
+            renderWordChips();
+        }
+        ui.singleWordInput.value = '';
+        clearPendingImage();
+        ui.singleWordInput.focus();
+    };
+
+    const setBulkMode = (isBulk) => {
+        ui.wordEntrySingle.style.display = isBulk ? 'none' : 'block';
+        ui.customListWordsInput.style.display = isBulk ? 'block' : 'none';
+    };
+
+    const resetCustomWordForm = () => {
+        state.editingListName = null;
+        ui.customListNameInput.value = '';
+        ui.customListWordsInput.value = '';
+        ui.singleWordInput.value = '';
+        state.pendingWords = [];
+        clearPendingImage();
+        renderWordChips();
+        ui.bulkModeToggle.checked = false;
+        setBulkMode(false);
+        ui.saveCustomListBtn.textContent = 'Save List';
+        ui.cancelEditBtn.hidden = true;
+    };
+
+    const showCustomWordsScreen = () => {
+        resetCustomWordForm();
+        renderCustomListManager();
+        showScreen(ui.customWordsScreen);
+    };
+
+    const handleEditList = (name) => {
+        const lists = getCustomWordLists();
+        const words = lists[name];
+        if (!words) return;
+
+        state.editingListName = name;
+        state.pendingWords = words.map(w => ({ word: w.Word, picture: w.Picture || null }));
+        clearPendingImage();
+        ui.customListNameInput.value = name;
+        ui.bulkModeToggle.checked = false;
+        setBulkMode(false);
+        ui.customListWordsInput.value = '';
+        renderWordChips();
+        renderCustomListManager();
+        ui.saveCustomListBtn.textContent = 'Update List';
+        ui.cancelEditBtn.hidden = false;
+        ui.customListNameInput.focus();
+    };
+
+    const handleCancelEdit = () => {
+        resetCustomWordForm();
+        renderCustomListManager();
+    };
+
+    const handleSaveCustomList = () => {
+        playSound(audio.buttonClick);
+        const name = ui.customListNameInput.value.trim();
+        const words = ui.bulkModeToggle.checked
+            ? parseWordsInput(ui.customListWordsInput.value)
+            : state.pendingWords.map(w => w.picture ? { Word: w.word, Picture: w.picture } : { Word: w.word });
+
+        if (!name) {
+            alert('Please enter a name for your word list.');
+            return;
+        }
+        if (words.length === 0) {
+            alert('Please add at least one word (3+ letters).');
+            return;
+        }
+
+        const lists = getCustomWordLists();
+        if (state.editingListName && state.editingListName !== name) {
+            delete lists[state.editingListName];
+        }
+        lists[name] = words;
+        const saved = saveCustomWordLists(lists);
+        if (!saved) {
+            alert('Could not save this word list — storage might be full. Try smaller/fewer pictures, or fewer words.');
+            return;
+        }
+
+        resetCustomWordForm();
+        renderCustomListManager();
+    };
+
     const fetchWords = async (sheetName) => {
+        // --- Custom offline word lists take priority: no internet required ---
+        const customLists = getCustomWordLists();
+        if (customLists[sheetName]) {
+            console.log(`Loading custom word list "${sheetName}" from local storage.`);
+            return customLists[sheetName]
+                .map(row => ({ word: row.Word?.toUpperCase(), picture: row.Picture }))
+                .filter(item => item.word && item.word.length > 1);
+        }
+
         const localStorageKey = `words_${sheetName}`;
 
         // --- Network-First Approach ---
@@ -529,7 +776,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const selectLevel = (levelName) => {
         state.selectedLevelName = levelName;
-        ui.startScreenTitle.textContent = `✏️ PopAR Kit - ${levelName} ✏️`;
+        ui.startScreenTitle.textContent = `✏️ PopAR Kit 2.0 - ${levelName} ✏️`;
         ui.startScreenDescription.textContent = 'Use your index finger to pop the correct letter bubble!';
         ui.startBtn.textContent = 'Start Quiz';
         ui.startBtn.onclick = startGame;
@@ -548,14 +795,24 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.timerContainer.style.display = 'none';
         resetTimer();
         
-        // Populate level buttons
-        ui.levelButtonsContainer.innerHTML = '';
+        // Populate the preset level dropdown
+        ui.levelSelect.innerHTML = '<option value="" disabled selected>Select a level...</option>';
         AVAILABLE_LEVELS.forEach(level => {
+            const option = document.createElement('option');
+            option.value = level;
+            option.textContent = level;
+            ui.levelSelect.appendChild(option);
+        });
+
+        // Populate custom word list buttons
+        ui.customLevelButtonsContainer.innerHTML = '';
+        const customListNames = Object.keys(getCustomWordLists());
+        customListNames.forEach(level => {
             const button = document.createElement('button');
             button.className = 'btn';
             button.textContent = level;
             button.onclick = () => { playSound(audio.buttonClick); selectLevel(level); };
-            ui.levelButtonsContainer.appendChild(button);
+            ui.customLevelButtonsContainer.appendChild(button);
         });
 
         showScreen(ui.levelSelectionScreen);
@@ -577,6 +834,36 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         ui.goBtn.addEventListener('click', handleCustomLevel);
         ui.sheetNameInput.addEventListener('keypress', (e) => e.key === 'Enter' && handleCustomLevel());
+
+        ui.playLevelBtn.addEventListener('click', () => {
+            playSound(audio.buttonClick);
+            const level = ui.levelSelect.value;
+            if (level) selectLevel(level);
+        });
+
+        ui.myWordsBtn.addEventListener('click', () => { playSound(audio.buttonClick); showCustomWordsScreen(); });
+        ui.backToLevelsBtn.addEventListener('click', () => { playSound(audio.buttonClick); showLevelSelectionScreen(); });
+        ui.saveCustomListBtn.addEventListener('click', handleSaveCustomList);
+        ui.cancelEditBtn.addEventListener('click', () => { playSound(audio.buttonClick); handleCancelEdit(); });
+
+        ui.addWordBtn.addEventListener('click', () => { playSound(audio.buttonClick); handleAddWord(); });
+        ui.singleWordInput.addEventListener('keypress', (e) => e.key === 'Enter' && (e.preventDefault(), handleAddWord()));
+        ui.bulkModeToggle.addEventListener('change', () => setBulkMode(ui.bulkModeToggle.checked));
+
+        ui.singleWordImageInput.addEventListener('change', async () => {
+            const file = ui.singleWordImageInput.files[0];
+            if (!file) return;
+            try {
+                state.pendingImageDataUrl = await resizeImageToDataUrl(file);
+                ui.pendingImageThumb.src = state.pendingImageDataUrl;
+                ui.pendingImagePreview.style.display = 'flex';
+            } catch (e) {
+                console.warn('Could not process image:', e);
+                alert('Could not load that picture. Please try a different image.');
+                clearPendingImage();
+            }
+        });
+        ui.removePendingImageBtn.addEventListener('click', () => { playSound(audio.buttonClick); clearPendingImage(); });
 
         [ui.stopwatchBtn, ui.countdownBtn, ui.noTimerBtn].forEach(btn => {
             btn.addEventListener('click', () => {

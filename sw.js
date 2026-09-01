@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'popar-kit-cache-v9';
+const CACHE_NAME = 'popar-kit-cache-v15';
 const urlsToCache = [
   './',
   './index.html',
@@ -13,6 +13,7 @@ const urlsToCache = [
   './icon/hello-icon-144.png',
   './icon/hello-icon-192.png',
   './icon/hello-icon-512.png',
+  './fonts/Baloo2-Bold.woff2',
   './backgroundMusic.mp3',
   './buttonClickSound.mp3',
   './popBubbleSound.mp3',
