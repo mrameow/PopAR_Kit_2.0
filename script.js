@@ -1,3 +1,4 @@
+import { HandLandmarker, PoseLandmarker, FilesetResolver, DrawingUtils } from './mediapipe/vision_bundle.mjs';
 
 document.addEventListener('DOMContentLoaded', () => {
     // --- 1. CONFIGURATION ---
@@ -5,18 +6,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const BASE_OPENSHEET_URL = `https://opensheet.elk.sh/${GOOGLE_SHEET_ID}/`;
     const AVAILABLE_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "The Password"];
     const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
-    const WORD_POWER_DWELL_MS = 800; // how long to hold a zone to confirm the answer
+    const WORD_POWER_DWELL_MS = 2000; // how long to hold a zone to confirm the answer
     const COUNTDOWN_TIME = 60; // seconds
-    const MEDIAPIPE_HANDS_CONFIG = {
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1635986972/${file}`
-    };
-    const HANDS_OPTIONS = {
-        maxNumHands: 2,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-        useCpuInference: true
-    };
+    const WASM_PATH = './mediapipe/wasm';
+    const HAND_MODEL_PATH = './models/hand_landmarker.task';
+    const POSE_MODEL_PATH = './models/pose_landmarker_lite.task';
 
     // --- 2. UI ELEMENTS ---
     const ui = {
@@ -70,6 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sfxVolumeSlider: document.getElementById('sfx-volume'),
         finalScore: document.getElementById('final-score'),
         handStatus: document.getElementById('hand-status'),
+        handStatusLabel: document.getElementById('hand-status-label'),
         videoContainer: document.querySelector('.video-container'),
         wordContainer: document.getElementById('word-container'),
         imagePlaceholder: document.getElementById('image-placeholder'),
@@ -116,6 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
         wordZones: [],
         activeZoneIndex: -1,
         lastFrameTime: 0,
+        poseLandmarks: null,
     };
 
     const GAME_MODE_HINTS = {
@@ -123,9 +119,46 @@ document.addEventListener('DOMContentLoaded', () => {
         wordPower: 'Move into the zone with the correct word and hold still!',
     };
 
-    const hands = new Hands(MEDIAPIPE_HANDS_CONFIG);
-    hands.setOptions(HANDS_OPTIONS);
-    hands.onResults(onHandResults);
+    let handLandmarker = null;
+    let poseLandmarker = null;
+    let drawingUtils = null;
+
+    const createLandmarker = async (Klass, vision, modelAssetPath, extraOptions) => {
+        try {
+            return await Klass.createFromOptions(vision, {
+                baseOptions: { modelAssetPath, delegate: 'GPU' },
+                ...extraOptions,
+            });
+        } catch (gpuError) {
+            console.warn(`GPU delegate failed for ${modelAssetPath}, falling back to CPU.`, gpuError);
+            return await Klass.createFromOptions(vision, {
+                baseOptions: { modelAssetPath, delegate: 'CPU' },
+                ...extraOptions,
+            });
+        }
+    };
+
+    const initLandmarkers = async () => {
+        const vision = await FilesetResolver.forVisionTasks(WASM_PATH);
+
+        handLandmarker = await createLandmarker(HandLandmarker, vision, HAND_MODEL_PATH, {
+            runningMode: 'VIDEO',
+            numHands: 2,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+        });
+
+        poseLandmarker = await createLandmarker(PoseLandmarker, vision, POSE_MODEL_PATH, {
+            runningMode: 'VIDEO',
+            numPoses: 1,
+            minPoseDetectionConfidence: 0.5,
+            minPosePresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+        });
+
+        drawingUtils = new DrawingUtils(ui.ctx);
+    };
 
     // --- 5. CORE FUNCTIONS ---
 
@@ -721,22 +754,35 @@ document.addEventListener('DOMContentLoaded', () => {
         updateTimerDisplay();
     };
 
-    // --- 5e. Camera & MediaPipe ---
+    // --- 5e. Camera & MediaPipe Tasks Vision ---
     const initCamera = async () => {
         if (state.cameraInitialized) return;
         initializeAudio();
 
-        const processVideo = async () => {
-            // Ensure the video is playing before sending frames
-            if (!ui.videoElement.paused && !ui.videoElement.ended) {
-                await hands.send({ image: ui.videoElement });
+        ui.cameraBtn.disabled = true;
+        ui.cameraBtn.textContent = 'Loading...';
+
+        const processVideo = () => {
+            // Note: we deliberately do NOT skip frames based on video.currentTime — on some
+            // devices/browsers that value doesn't reliably advance every frame, which would
+            // silently freeze detection. Running detectForVideo every rAF tick costs a little
+            // redundant compute at worst, but never stalls tracking.
+            if (!ui.videoElement.paused && !ui.videoElement.ended && handLandmarker) {
+                const now = performance.now();
+                const handResults = handLandmarker.detectForVideo(ui.videoElement, now);
+                // Pose is only needed (and only run) during active Word Power gameplay, to save compute.
+                const needsPose = poseLandmarker && state.gameActive && state.gameMode === 'wordPower';
+                const poseResults = needsPose ? poseLandmarker.detectForVideo(ui.videoElement, now) : null;
+                onDetectionResults(handResults, poseResults);
             }
             requestAnimationFrame(processVideo);
         };
 
         try {
-            // Simplified constraints for better mobile compatibility
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+            const [stream] = await Promise.all([
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } }),
+                initLandmarkers(),
+            ]);
             ui.videoElement.srcObject = stream;
 
             ui.videoElement.onloadedmetadata = () => {
@@ -744,16 +790,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.videoAspectRatio = ui.videoElement.videoWidth / ui.videoElement.videoHeight;
                 updateCanvasSize();
                 state.cameraInitialized = true;
+                ui.cameraBtn.disabled = false;
+                ui.cameraBtn.textContent = 'Enable Camera';
                 showLevelSelectionScreen();
                 processVideo(); // Start the processing loop
             };
         } catch (err) {
-            console.error("Failed to acquire camera feed: ", err);
-            alert(`Failed to acquire camera feed: ${err.name}: ${err.message}`);
+            console.error("Failed to start the camera or load the tracking models: ", err);
+            alert(`Failed to start the camera or load the hand/body tracking models: ${err.name || ''} ${err.message}`);
+            ui.cameraBtn.disabled = false;
+            ui.cameraBtn.textContent = 'Enable Camera';
         }
     };
-    
-    function onHandResults(results) {
+
+    function onDetectionResults(handResults, poseResults) {
         const { ctx, outputCanvas } = ui;
         const now = performance.now();
         const dt = now - (state.lastFrameTime || now);
@@ -761,36 +811,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
         ctx.save();
         ctx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
-        ctx.drawImage(results.image, 0, 0, outputCanvas.width, outputCanvas.height);
+        ctx.drawImage(ui.videoElement, 0, 0, outputCanvas.width, outputCanvas.height);
 
-        state.multiHandLandmarks = results.multiHandLandmarks || [];
+        state.multiHandLandmarks = handResults.landmarks || [];
+        state.poseLandmarks = (poseResults && poseResults.landmarks && poseResults.landmarks[0]) || null;
 
-        if (state.multiHandLandmarks.length > 0) {
-            ui.handStatus.textContent = "Yes";
-            for (const landmarks of state.multiHandLandmarks) {
-                window.drawConnectors(ctx, landmarks, window.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 3 });
-                window.drawLandmarks(ctx, landmarks, { color: '#FF0000', radius: 3 });
-            }
-            if (state.gameActive && !state.waitingForNextQuestion) {
-                if (state.gameMode === 'wordPower') {
-                    updateWordPowerZones(dt);
-                } else {
-                    checkBubbleCollision();
-                }
-            }
-        } else {
-            ui.handStatus.textContent = "No";
-            resetWordZoneDwell();
+        const isWordPower = state.gameMode === 'wordPower';
+        const tracked = isWordPower ? !!state.poseLandmarks : state.multiHandLandmarks.length > 0;
+        ui.handStatusLabel.textContent = isWordPower ? 'Body' : 'Hand';
+        ui.handStatus.textContent = tracked ? 'Yes' : 'No';
+
+        for (const landmarks of state.multiHandLandmarks) {
+            drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 3 });
+            drawingUtils.drawLandmarks(landmarks, { color: '#FF0000', radius: 3 });
+        }
+        if (state.poseLandmarks) {
+            drawingUtils.drawConnectors(state.poseLandmarks, PoseLandmarker.POSE_CONNECTIONS, { color: '#00BFFF', lineWidth: 3 });
         }
 
-        if (state.gameMode === 'wordPower') {
+        if (state.gameActive && !state.waitingForNextQuestion) {
+            if (isWordPower) {
+                if (state.poseLandmarks) {
+                    updateWordPowerZones(dt);
+                } else {
+                    resetWordZoneDwell();
+                }
+            } else if (state.multiHandLandmarks.length > 0) {
+                checkBubbleCollision();
+            }
+        }
+
+        if (isWordPower) {
             drawWordZones();
         } else {
             drawLetterBubbles();
         }
         ctx.restore();
     }
-    
+
+
     // --- 5f. Game Logic ---
     const loadQuestion = (question) => {
         state.currentWord = question.word;
@@ -931,21 +990,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const updateWordPowerZones = (dt) => {
         if (!state.wordZones || state.wordZones.length === 0) return;
-
-        // Use the average x-position of all visible hand landmarks as a stand-in
-        // for "which zone the player is standing in" (this app tracks hands, not full body).
-        let sumX = 0, count = 0;
-        for (const landmarks of state.multiHandLandmarks) {
-            for (const lm of landmarks) {
-                sumX += lm.x * ui.outputCanvas.width;
-                count++;
-            }
-        }
-        if (count === 0) {
+        const pose = state.poseLandmarks;
+        if (!pose) {
             resetWordZoneDwell();
             return;
         }
-        const avgX = sumX / count;
+
+        // Use the midpoint between the shoulders as the player's standing x-position.
+        const leftShoulder = pose[11];
+        const rightShoulder = pose[12];
+        if (!leftShoulder || !rightShoulder) {
+            resetWordZoneDwell();
+            return;
+        }
+        const avgX = ((leftShoulder.x + rightShoulder.x) / 2) * ui.outputCanvas.width;
 
         const zoneWidth = ui.outputCanvas.width / state.wordZones.length;
         let zoneIndex = Math.floor(avgX / zoneWidth);

@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'popar-kit-cache-v17';
+const CACHE_NAME = 'popar-kit-cache-v19';
 const urlsToCache = [
   './',
   './index.html',
@@ -7,13 +7,15 @@ const urlsToCache = [
   './script.js',
   './words.json',
   './manifest.json',
-  './camera_utils.js',
-  './drawing_utils.js',
-  './hands.js',
   './icon/hello-icon-144.png',
   './icon/hello-icon-192.png',
   './icon/hello-icon-512.png',
   './fonts/Baloo2-Bold.woff2',
+  './mediapipe/vision_bundle.mjs',
+  './mediapipe/wasm/vision_wasm_internal.js',
+  './mediapipe/wasm/vision_wasm_internal.wasm',
+  './models/hand_landmarker.task',
+  './models/pose_landmarker_lite.task',
   './backgroundMusic.mp3',
   './buttonClickSound.mp3',
   './popBubbleSound.mp3',

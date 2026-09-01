@@ -6,9 +6,6 @@
     <title>PopAR Kit 2.0</title>
     <link rel="icon" href="icon/hello-icon-144.png">
     <link rel="manifest" href="manifest.json">
-    <script src="camera_utils.js" crossorigin="anonymous"></script>
-    <script src="hands.js" crossorigin="anonymous"></script>
-    <script src="drawing_utils.js" crossorigin="anonymous"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -40,7 +37,7 @@
             <div class="feedback" id="feedback"></div>
 
             <div class="hand-indicator">
-                Hand detected: <span id="hand-status">No</span>
+                <span id="hand-status-label">Hand</span> detected: <span id="hand-status">No</span>
             </div>
 
             <button class="btn main-menu-btn" id="main-menu-btn">Main Menu</button>
@@ -179,6 +176,6 @@
     <audio id="correctAnswerSound" preload="auto" src="correctAnswerSound.mp3"></audio>
     <audio id="wrongAnswerSound" preload="auto"src="wrongAnswerSound.mp3"></audio>
 
-    <script src="script.js"></script>
+    <script type="module" src="script.js"></script>
 </body>
 </html>
