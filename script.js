@@ -2038,12 +2038,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const handleBubblePop = (bubble) => {
         bubble.popped = true;
-        state.waitingForNextQuestion = true;
         playSound(audio.popBubble);
 
         const question = state.selectedQuestions[state.currentQuestionIndex];
 
         if (bubble.isCorrect) {
+            state.waitingForNextQuestion = true;
             playSound(audio.correctAnswer);
 
             // Hard mode: more letters left in this word — advance within the same question
@@ -2058,10 +2058,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             finishQuestion(true);
-        } else {
-            playSound(audio.wrongAnswer);
-            finishQuestion(false);
+            return;
         }
+
+        playSound(audio.wrongAnswer);
+
+        // Hard mode: don't fail the whole word on one wrong letter — just remove that
+        // wrong bubble and let the player keep guessing the same letter with what's left.
+        if (question.hardMode) {
+            showFeedback("Try again! 🤔", false);
+            return;
+        }
+
+        state.waitingForNextQuestion = true;
+        finishQuestion(false);
     };
 
     // --- 5g. Stay in Lane (lane-based) Logic ---
