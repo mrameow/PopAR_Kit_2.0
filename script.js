@@ -1674,9 +1674,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!ui.videoElement.paused && !ui.videoElement.ended && handLandmarker && (now - lastProcessedAt) >= MIN_PROCESS_INTERVAL_MS) {
                 lastProcessedAt = now;
                 try {
-                    const handResults = handLandmarker.detectForVideo(ui.videoElement, now);
-                    // Pose is only needed (and only run) during active Stay in Lane gameplay, to save compute.
+                    // Hand tracking isn't used at all in Stay in Lane, and pose tracking is only
+                    // needed during active Stay in Lane gameplay — skipping the unused model each
+                    // frame meaningfully cuts compute, which matters most on slower/mobile devices.
+                    const needsHand = state.gameMode !== 'stayInLane';
                     const needsPose = poseLandmarker && state.gameActive && state.gameMode === 'stayInLane';
+                    const handResults = needsHand ? handLandmarker.detectForVideo(ui.videoElement, now) : { landmarks: [] };
                     const poseResults = needsPose ? poseLandmarker.detectForVideo(ui.videoElement, now) : null;
                     onDetectionResults(handResults, poseResults);
                     detectionErrorCount = 0;
@@ -1718,6 +1721,82 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // --- 5e-i. Hand rendering: a cute glove instead of a raw landmark skeleton ---
+    const HAND_GLOVE_COLORS = [
+        { fill: '#3DB8E8', stroke: '#1C7FA3', cuff: '#8FDCF5' }, // sky — first hand
+        { fill: '#FF7A68', stroke: '#D8452F', cuff: '#FFAFA2' }, // coral — second hand
+    ];
+
+    const drawHandGlove = (landmarks, handIndex) => {
+        const { ctx, outputCanvas: canvas } = ui;
+        const wrist = landmarks[0];
+        const middleMcp = landmarks[9];
+        const indexTip = landmarks[8];
+
+        const wx = wrist.x * canvas.width, wy = wrist.y * canvas.height;
+        const mx = middleMcp.x * canvas.width, my = middleMcp.y * canvas.height;
+        const dx = mx - wx, dy = my - wy;
+        const handLen = Math.hypot(dx, dy) || 1;
+        const angle = Math.atan2(dy, dx) + Math.PI / 2;
+        const cx = (wx + mx) / 2;
+        const cy = (wy + my) / 2;
+        const scale = handLen / 55;
+        const colors = HAND_GLOVE_COLORS[handIndex % HAND_GLOVE_COLORS.length];
+
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle);
+        ctx.scale(scale, scale);
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 4;
+
+        // Mitten body
+        ctx.beginPath();
+        ctx.moveTo(-26, 38);
+        ctx.quadraticCurveTo(-38, 8, -28, -18);
+        ctx.quadraticCurveTo(-22, -44, 0, -48);
+        ctx.quadraticCurveTo(22, -44, 28, -18);
+        ctx.quadraticCurveTo(38, 8, 26, 38);
+        ctx.quadraticCurveTo(0, 52, -26, 38);
+        ctx.closePath();
+        ctx.fillStyle = colors.fill;
+        ctx.fill();
+        ctx.strokeStyle = colors.stroke;
+        ctx.stroke();
+
+        // Thumb
+        ctx.beginPath();
+        ctx.ellipse(-32, 8, 11, 19, -0.55, 0, Math.PI * 2);
+        ctx.fillStyle = colors.fill;
+        ctx.fill();
+        ctx.stroke();
+
+        // Cuff
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(-28, 32, 56, 16, 8);
+        } else {
+            ctx.rect(-28, 32, 56, 16);
+        }
+        ctx.fillStyle = colors.cuff;
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.restore();
+
+        // A small pointer dot at the index fingertip — this is the actual point used
+        // for bubble-pop hit-testing, kept visible so aiming still feels precise.
+        const tx = indexTip.x * canvas.width, ty = indexTip.y * canvas.height;
+        const pointerRadius = Math.max(5, Math.min(10, 7 * scale));
+        ctx.beginPath();
+        ctx.arc(tx, ty, pointerRadius, 0, Math.PI * 2);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = colors.stroke;
+        ctx.stroke();
+    };
+
     function onDetectionResults(handResults, poseResults) {
         const { ctx, outputCanvas } = ui;
         const now = performance.now();
@@ -1736,10 +1815,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.handStatusLabel.textContent = isStayInLane ? 'Body' : 'Hand';
         ui.handStatus.textContent = tracked ? 'Yes' : 'No';
 
-        for (const landmarks of state.multiHandLandmarks) {
-            drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 3 });
-            drawingUtils.drawLandmarks(landmarks, { color: '#FF0000', radius: 3 });
-        }
+        state.multiHandLandmarks.forEach((landmarks, i) => drawHandGlove(landmarks, i));
         if (state.poseLandmarks) {
             drawingUtils.drawConnectors(state.poseLandmarks, PoseLandmarker.POSE_CONNECTIONS, { color: '#00BFFF', lineWidth: 3 });
         }

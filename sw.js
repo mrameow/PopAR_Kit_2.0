@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'popar-kit-cache-v39';
+const CACHE_NAME = 'popar-kit-cache-v40';
 const urlsToCache = [
   './',
   './index.html',
