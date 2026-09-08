@@ -414,6 +414,8 @@ document.addEventListener('DOMContentLoaded', () => {
         playerFaceEmoji: '🐱', // Stay in Lane: a random cartoon/animal face swapped over the player's real face
         playerHeartEmoji: '❤️', // Stay in Lane: a random colored heart placed over the player's chest
         wasPoseTracked: false,
+        handGloveColors: [], // Point and Pop: random cute color per hand, from GLOVE_COLOR_PALETTE
+        wasAnyHandTracked: false,
         faceTargetPx: null,
         heartTargetPx: null,
     };
@@ -1706,15 +1708,21 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // --- 5e-i. Hand rendering: a chunky, glove-like skeleton that moves with each finger ---
-    const HAND_GLOVE_LINE_COLORS = [
-        { line: '#3DDC97', dark: '#0E8F63', tip: '#FFFDF8' }, // mint — first hand
-        { line: '#FF7A68', dark: '#D8452F', tip: '#FFFDF8' }, // coral — second hand
+    // A random one of these is picked per hand — re-rolled whenever hand tracking is
+    // freshly regained after being lost, same logic as the Stay in Lane face/heart.
+    const GLOVE_COLOR_PALETTE = [
+        { line: '#3DDC97', dark: '#0E8F63', tip: '#FFFDF8' }, // mint
+        { line: '#FF7A68', dark: '#D8452F', tip: '#FFFDF8' }, // coral
+        { line: '#3DB8E8', dark: '#1C7FA3', tip: '#FFFDF8' }, // sky
+        { line: '#FFC93C', dark: '#B9840A', tip: '#FFFDF8' }, // yellow
+        { line: '#C88FFA', dark: '#7C3FBE', tip: '#FFFDF8' }, // lavender
+        { line: '#FF8FC6', dark: '#D63E86', tip: '#FFFDF8' }, // pink
     ];
     const HAND_FINGERTIP_INDICES = new Set([4, 8, 12, 16, 20]);
 
     const drawHandGlove = (landmarks, handIndex) => {
         const { ctx, outputCanvas: canvas } = ui;
-        const colors = HAND_GLOVE_LINE_COLORS[handIndex % HAND_GLOVE_LINE_COLORS.length];
+        const colors = state.handGloveColors[handIndex] || GLOVE_COLOR_PALETTE[0];
 
         // Scale the glove's thickness to this hand's actual on-screen size.
         const wrist = landmarks[0], middleMcp = landmarks[9];
@@ -1848,6 +1856,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const tracked = isStayInLane ? !!state.poseLandmarks : state.multiHandLandmarks.length > 0;
         ui.handStatusLabel.textContent = isStayInLane ? 'Body' : 'Hand';
         ui.handStatus.textContent = tracked ? 'Yes' : 'No';
+
+        const anyHandTracked = state.multiHandLandmarks.length > 0;
+        if (anyHandTracked && !state.wasAnyHandTracked) {
+            // Hands freshly (re)appeared — pick a fresh random color for every visible hand.
+            state.handGloveColors = state.multiHandLandmarks.map(() => GLOVE_COLOR_PALETTE[Math.floor(Math.random() * GLOVE_COLOR_PALETTE.length)]);
+        } else if (state.multiHandLandmarks.length > state.handGloveColors.length) {
+            // A second hand joined while the first was already tracked — give it a color too.
+            while (state.handGloveColors.length < state.multiHandLandmarks.length) {
+                state.handGloveColors.push(GLOVE_COLOR_PALETTE[Math.floor(Math.random() * GLOVE_COLOR_PALETTE.length)]);
+            }
+        }
+        state.wasAnyHandTracked = anyHandTracked;
 
         state.multiHandLandmarks.forEach((landmarks, i) => drawHandGlove(landmarks, i));
         if (isStayInLane && state.poseLandmarks) {
