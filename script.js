@@ -1721,80 +1721,61 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- 5e-i. Hand rendering: a cute glove instead of a raw landmark skeleton ---
-    const HAND_GLOVE_COLORS = [
-        { fill: '#3DB8E8', stroke: '#1C7FA3', cuff: '#8FDCF5' }, // sky — first hand
-        { fill: '#FF7A68', stroke: '#D8452F', cuff: '#FFAFA2' }, // coral — second hand
+    // --- 5e-i. Hand rendering: a chunky, glove-like skeleton that moves with each finger ---
+    const HAND_GLOVE_LINE_COLORS = [
+        { line: '#3DDC97', dark: '#0E8F63', tip: '#FFFDF8' }, // mint — first hand
+        { line: '#FF7A68', dark: '#D8452F', tip: '#FFFDF8' }, // coral — second hand
     ];
+    const HAND_FINGERTIP_INDICES = new Set([4, 8, 12, 16, 20]);
 
     const drawHandGlove = (landmarks, handIndex) => {
         const { ctx, outputCanvas: canvas } = ui;
-        const wrist = landmarks[0];
-        const middleMcp = landmarks[9];
-        const indexTip = landmarks[8];
+        const colors = HAND_GLOVE_LINE_COLORS[handIndex % HAND_GLOVE_LINE_COLORS.length];
 
+        // Scale the glove's thickness to this hand's actual on-screen size.
+        const wrist = landmarks[0], middleMcp = landmarks[9];
         const wx = wrist.x * canvas.width, wy = wrist.y * canvas.height;
         const mx = middleMcp.x * canvas.width, my = middleMcp.y * canvas.height;
-        const dx = mx - wx, dy = my - wy;
-        const handLen = Math.hypot(dx, dy) || 1;
-        const angle = Math.atan2(dy, dx) + Math.PI / 2;
-        const cx = (wx + mx) / 2;
-        const cy = (wy + my) / 2;
-        const scale = handLen / 55;
-        const colors = HAND_GLOVE_COLORS[handIndex % HAND_GLOVE_COLORS.length];
+        const handLen = Math.hypot(mx - wx, my - wy) || 1;
+        const lineWidth = Math.max(10, Math.min(26, handLen * 0.34));
+
+        const point = (i) => [landmarks[i].x * canvas.width, landmarks[i].y * canvas.height];
 
         ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(angle);
-        ctx.scale(scale, scale);
+        ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.lineWidth = 4;
 
-        // Mitten body
-        ctx.beginPath();
-        ctx.moveTo(-26, 38);
-        ctx.quadraticCurveTo(-38, 8, -28, -18);
-        ctx.quadraticCurveTo(-22, -44, 0, -48);
-        ctx.quadraticCurveTo(22, -44, 28, -18);
-        ctx.quadraticCurveTo(38, 8, 26, 38);
-        ctx.quadraticCurveTo(0, 52, -26, 38);
-        ctx.closePath();
-        ctx.fillStyle = colors.fill;
-        ctx.fill();
-        ctx.strokeStyle = colors.stroke;
-        ctx.stroke();
+        // Dark outline pass first, then a brighter fill pass on top — gives each
+        // puffy "glove finger" segment a clean cartoon border.
+        [{ width: lineWidth + 6, color: colors.dark }, { width: lineWidth, color: colors.line }].forEach(pass => {
+            ctx.lineWidth = pass.width;
+            ctx.strokeStyle = pass.color;
+            for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
+                const [ax, ay] = point(start);
+                const [bx, by] = point(end);
+                ctx.beginPath();
+                ctx.moveTo(ax, ay);
+                ctx.lineTo(bx, by);
+                ctx.stroke();
+            }
+        });
 
-        // Thumb
-        ctx.beginPath();
-        ctx.ellipse(-32, 8, 11, 19, -0.55, 0, Math.PI * 2);
-        ctx.fillStyle = colors.fill;
-        ctx.fill();
-        ctx.stroke();
-
-        // Cuff
-        ctx.beginPath();
-        if (ctx.roundRect) {
-            ctx.roundRect(-28, 32, 56, 16, 8);
-        } else {
-            ctx.rect(-28, 32, 56, 16);
-        }
-        ctx.fillStyle = colors.cuff;
-        ctx.fill();
-        ctx.stroke();
+        // Round, filled joints so segments blend smoothly — fingertips a little bigger.
+        landmarks.forEach((lm, i) => {
+            const [x, y] = point(i);
+            const isTip = HAND_FINGERTIP_INDICES.has(i);
+            ctx.beginPath();
+            ctx.arc(x, y, isTip ? lineWidth * 0.62 : lineWidth * 0.5, 0, Math.PI * 2);
+            ctx.fillStyle = isTip ? colors.tip : colors.line;
+            ctx.fill();
+            if (isTip) {
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = colors.dark;
+                ctx.stroke();
+            }
+        });
 
         ctx.restore();
-
-        // A small pointer dot at the index fingertip — this is the actual point used
-        // for bubble-pop hit-testing, kept visible so aiming still feels precise.
-        const tx = indexTip.x * canvas.width, ty = indexTip.y * canvas.height;
-        const pointerRadius = Math.max(5, Math.min(10, 7 * scale));
-        ctx.beginPath();
-        ctx.arc(tx, ty, pointerRadius, 0, Math.PI * 2);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = colors.stroke;
-        ctx.stroke();
     };
 
     function onDetectionResults(handResults, poseResults) {
