@@ -15,6 +15,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
     const SUPER_SENTENCE_LISTS_KEY = 'popar_super_sentence_lists';
     const CAMERA_FLIP_KEY = 'popar_camera_flipped';
+    // MediaPipe's GPU (WebGL) delegate is unreliable on a lot of mobile GPU/driver
+    // combinations — it can silently produce poor/erratic results instead of throwing,
+    // so mobile devices skip it entirely and go straight to the CPU delegate.
+    const IS_MOBILE_DEVICE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const WORD_POWER_DWELL_MS = 3000; // how long to hold a lane to confirm the answer
     const DEFAULT_COUNTDOWN_SECONDS = 60; // default quiz-timer countdown length
     const READY_COUNTDOWN_STEPS = [3, 2, 1];
@@ -1692,7 +1696,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         height: { ideal: 480 },
                     },
                 }),
-                initLandmarkers(),
+                initLandmarkers(IS_MOBILE_DEVICE),
             ]);
             ui.videoElement.srcObject = stream;
 
