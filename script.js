@@ -5,8 +5,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const GOOGLE_SHEET_ID = '1ZMEfBGZQHGf-UVvNJj8D7cOhQ3M2Z2cYNBrNMT4pnn0';
     const BASE_OPENSHEET_URL = `https://opensheet.elk.sh/${GOOGLE_SHEET_ID}/`;
     const AVAILABLE_LEVELS = ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "The Password"];
+    const TEST_LEVEL_CONTENT_TYPES = {
+        'WP (No Pic)': 'words',
+        'WP (With Pic)': 'words',
+        'SS (No Pic)': 'sentence',
+        'SS (With Pic)': 'sentence',
+    };
+    const TEST_LEVEL_NAMES = Object.keys(TEST_LEVEL_CONTENT_TYPES);
     const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
     const SUPER_SENTENCE_LISTS_KEY = 'popar_super_sentence_lists';
+    const CAMERA_FLIP_KEY = 'popar_camera_flipped';
     const WORD_POWER_DWELL_MS = 3000; // how long to hold a lane to confirm the answer
     const DEFAULT_COUNTDOWN_SECONDS = 60; // default quiz-timer countdown length
     const READY_COUNTDOWN_STEPS = [3, 2, 1];
@@ -93,6 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
         mainMenuBtn: document.getElementById('main-menu-btn'),
         bgmVolumeSlider: document.getElementById('bgm-volume'),
         sfxVolumeSlider: document.getElementById('sfx-volume'),
+        flipCameraToggle: document.getElementById('flip-camera-toggle'),
         finalScore: document.getElementById('final-score'),
         handStatus: document.getElementById('hand-status'),
         handStatusLabel: document.getElementById('hand-status-label'),
@@ -104,6 +113,8 @@ document.addEventListener('DOMContentLoaded', () => {
         startScreenTitle: document.getElementById('start-screen-title'),
         startScreenDescription: document.getElementById('start-screen-description'),
         installButton: document.getElementById('install-button'),
+        fullscreenBtn: document.getElementById('fullscreen-btn'),
+        updateBtn: document.getElementById('update-btn'),
     };
 
     // --- 3. AUDIO ---
@@ -391,6 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
         obstacleSpawnTimer: 0,
         obstaclesEnabled: true, // Stay in Lane: whether falling rocks are on
         sfxVolume: 1, // matches the sfx-volume slider's default
+        cameraFlipped: false,
     };
 
     const GAME_MODE_HINTS = {
@@ -772,7 +784,20 @@ document.addEventListener('DOMContentLoaded', () => {
             sfxMasterGain.gain.value = state.sfxVolume;
         }
     };
-    
+
+    // Some external cameras (e.g. built into a smartboard) show a mirrored feed
+    // relative to a normal laptop webcam — this lets the user cancel that mirroring.
+    const setCameraFlipped = (flipped) => {
+        state.cameraFlipped = flipped;
+        ui.videoContainer.classList.toggle('camera-flipped', flipped);
+        ui.flipCameraToggle.checked = flipped;
+        try {
+            localStorage.setItem(CAMERA_FLIP_KEY, flipped ? 'true' : 'false');
+        } catch (e) {
+            console.warn('Could not save camera flip preference:', e);
+        }
+    };
+
     // --- 5c. API & Data Handling ---
     const shuffleArray = (array) => {
         for (let i = array.length - 1; i > 0; i--) {
@@ -822,6 +847,85 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // --- 5c-iv. Built-in test levels (Word Power + Super Sentence, with/without pictures) ---
+    const testLevelIcon = (emoji, bg) => 'data:image/svg+xml,' + encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="${bg}"/><text x="50" y="64" font-size="52" text-anchor="middle">${emoji}</text></svg>`
+    );
+
+    const seedTestLevels = () => {
+        const wordLists = getCustomWordLists();
+        let wordListsChanged = false;
+
+        // Clean up the old, longer test-level names from an earlier version.
+        ['Word Power Test (No Picture)', 'Word Power Test (With Picture)'].forEach(oldName => {
+            if (wordLists[oldName]) {
+                delete wordLists[oldName];
+                wordListsChanged = true;
+            }
+        });
+
+        if (!wordLists['WP (No Pic)']) {
+            wordLists['WP (No Pic)'] = [
+                { Word: 'cat' }, { Word: 'sun' }, { Word: 'ball' }, { Word: 'book' }, { Word: 'star' },
+            ];
+            wordListsChanged = true;
+        }
+
+        if (!wordLists['WP (With Pic)']) {
+            wordLists['WP (With Pic)'] = [
+                { Word: 'cat', Picture: testLevelIcon('🐱', '#DEFBEF') },
+                { Word: 'sun', Picture: testLevelIcon('☀️', '#FFF3D6') },
+                { Word: 'ball', Picture: testLevelIcon('⚽', '#DFF4FC') },
+                { Word: 'book', Picture: testLevelIcon('📖', '#FFE7E3') },
+                { Word: 'star', Picture: testLevelIcon('⭐', '#DEFBEF') },
+            ];
+            wordListsChanged = true;
+        }
+
+        if (wordListsChanged) saveCustomWordLists(wordLists);
+
+        const buildSentence = (sentence, blankWord, picture) => {
+            const tokens = sentence.trim().split(/\s+/);
+            const blankIndex = tokens.findIndex(t => t.replace(/[.,!?]/g, '').toLowerCase() === blankWord.toLowerCase());
+            return picture ? { Sentence: sentence, BlankIndex: blankIndex, Picture: picture } : { Sentence: sentence, BlankIndex: blankIndex };
+        };
+
+        const sentenceLists = getSuperSentenceLists();
+        let sentenceListsChanged = false;
+
+        // Clean up the old, longer test-level names from an earlier version.
+        ['Super Sentence Test (No Picture)', 'Super Sentence Test (With Picture)'].forEach(oldName => {
+            if (sentenceLists[oldName]) {
+                delete sentenceLists[oldName];
+                sentenceListsChanged = true;
+            }
+        });
+
+        if (!sentenceLists['SS (No Pic)']) {
+            sentenceLists['SS (No Pic)'] = [
+                buildSentence('The cat is sleeping on the mat.', 'cat'),
+                buildSentence('I like to eat an apple.', 'apple'),
+                buildSentence('She is riding a bike.', 'bike'),
+                buildSentence('He is kicking the ball.', 'ball'),
+                buildSentence('The sun is shining brightly.', 'sun'),
+            ];
+            sentenceListsChanged = true;
+        }
+
+        if (!sentenceLists['SS (With Pic)']) {
+            sentenceLists['SS (With Pic)'] = [
+                buildSentence('The cat is sleeping on the mat.', 'cat', testLevelIcon('🐱', '#DEFBEF')),
+                buildSentence('I like to eat an apple.', 'apple', testLevelIcon('🍎', '#FFE7E3')),
+                buildSentence('She is riding a bike.', 'bike', testLevelIcon('🚲', '#DFF4FC')),
+                buildSentence('He is kicking the ball.', 'ball', testLevelIcon('⚽', '#DFF4FC')),
+                buildSentence('The sun is shining brightly.', 'sun', testLevelIcon('☀️', '#FFF3D6')),
+            ];
+            sentenceListsChanged = true;
+        }
+
+        if (sentenceListsChanged) saveSuperSentenceLists(sentenceLists);
+    };
+
     const resizeImageToDataUrl = (file, maxDim = 320, quality = 0.75) => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -850,6 +954,19 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
+    // Lets users paste a copied picture (e.g. Ctrl+V from a screenshot) straight into
+    // a word/sentence text field instead of having to save it as a file first.
+    const extractImageFileFromClipboard = (e) => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return null;
+        for (const item of items) {
+            if (item.kind === 'file' && item.type.startsWith('image/')) {
+                return item.getAsFile();
+            }
+        }
+        return null;
+    };
+
     const parseWordsInput = (text) => {
         return text
             .split(/[\n,]/)
@@ -860,7 +977,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const renderCustomListManager = () => {
         const lists = getCustomWordLists();
-        const names = Object.keys(lists);
+        const names = Object.keys(lists).filter(name => !TEST_LEVEL_NAMES.includes(name));
         ui.customListContainer.innerHTML = '';
 
         if (names.length === 0) {
@@ -1190,7 +1307,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const renderSuperSentenceListManager = () => {
         const lists = getSuperSentenceLists();
-        const names = Object.keys(lists);
+        const names = Object.keys(lists).filter(name => !TEST_LEVEL_NAMES.includes(name));
         ui.superSentenceListContainer.innerHTML = '';
 
         if (names.length === 0) {
@@ -1967,7 +2084,8 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.bubbleMovementSettingsSection.style.display = state.gameMode === 'stayInLane' ? 'none' : 'block';
         ui.obstacleSettingsSection.style.display = state.gameMode === 'stayInLane' ? 'block' : 'none';
 
-        // Populate the preset level dropdown
+        // Populate the preset level dropdown: the static AVAILABLE_LEVELS first,
+        // then the built-in Word Power / Super Sentence test levels.
         ui.levelSelect.innerHTML = '<option value="" disabled selected>Select a level...</option>';
         AVAILABLE_LEVELS.forEach(level => {
             const option = document.createElement('option');
@@ -1975,10 +2093,16 @@ document.addEventListener('DOMContentLoaded', () => {
             option.textContent = level;
             ui.levelSelect.appendChild(option);
         });
+        TEST_LEVEL_NAMES.forEach(level => {
+            const option = document.createElement('option');
+            option.value = level;
+            option.textContent = level;
+            ui.levelSelect.appendChild(option);
+        });
 
-        // Populate custom word list buttons
+        // Populate custom word list buttons (skip the built-in test levels, shown in Levels instead)
         ui.customLevelButtonsContainer.innerHTML = '';
-        const customListNames = Object.keys(getCustomWordLists());
+        const customListNames = Object.keys(getCustomWordLists()).filter(name => !TEST_LEVEL_NAMES.includes(name));
         customListNames.forEach(level => {
             const button = document.createElement('button');
             button.className = 'btn';
@@ -1987,9 +2111,9 @@ document.addEventListener('DOMContentLoaded', () => {
             ui.customLevelButtonsContainer.appendChild(button);
         });
 
-        // Populate Super Sentence list buttons
+        // Populate Super Sentence list buttons (skip the built-in test levels, shown in Levels instead)
         ui.superSentenceButtonsContainer.innerHTML = '';
-        const sentenceListNames = Object.keys(getSuperSentenceLists());
+        const sentenceListNames = Object.keys(getSuperSentenceLists()).filter(name => !TEST_LEVEL_NAMES.includes(name));
         sentenceListNames.forEach(name => {
             const button = document.createElement('button');
             button.className = 'btn';
@@ -2021,7 +2145,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.playLevelBtn.addEventListener('click', () => {
             playSound(audio.buttonClick);
             const level = ui.levelSelect.value;
-            if (level) selectLevel(level);
+            if (level) selectLevel(level, TEST_LEVEL_CONTENT_TYPES[level] || 'words');
         });
 
         ui.myWordsBtn.addEventListener('click', () => { playSound(audio.buttonClick); showCustomWordsScreen(); });
@@ -2048,6 +2172,21 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         ui.removePendingImageBtn.addEventListener('click', () => { playSound(audio.buttonClick); clearPendingImage(); });
 
+        ui.singleWordInput.addEventListener('paste', async (e) => {
+            const file = extractImageFileFromClipboard(e);
+            if (!file) return;
+            e.preventDefault();
+            try {
+                state.pendingImageDataUrl = await resizeImageToDataUrl(file);
+                ui.pendingImageThumb.src = state.pendingImageDataUrl;
+                ui.pendingImagePreview.style.display = 'flex';
+            } catch (err) {
+                console.warn('Could not process pasted image:', err);
+                alert('Could not load that picture. Please try a different image.');
+                clearPendingImage();
+            }
+        });
+
         ui.mySentencesBtn.addEventListener('click', () => { playSound(audio.buttonClick); showSuperSentenceScreen(); });
         ui.backToLevelsFromSentenceBtn.addEventListener('click', () => { playSound(audio.buttonClick); showLevelSelectionScreen(); });
         ui.saveSentenceListBtn.addEventListener('click', handleSaveSentenceList);
@@ -2073,6 +2212,21 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         ui.sentenceRemoveImageBtn.addEventListener('click', () => { playSound(audio.buttonClick); clearPendingSentenceImage(); });
+
+        ui.sentenceInput.addEventListener('paste', async (e) => {
+            const file = extractImageFileFromClipboard(e);
+            if (!file) return;
+            e.preventDefault();
+            try {
+                state.pendingSentenceImageDataUrl = await resizeImageToDataUrl(file);
+                ui.sentencePendingImageThumb.src = state.pendingSentenceImageDataUrl;
+                ui.sentencePendingImagePreview.style.display = 'flex';
+            } catch (err) {
+                console.warn('Could not process pasted image:', err);
+                alert('Could not load that picture. Please try a different image.');
+                clearPendingSentenceImage();
+            }
+        });
 
         [ui.modePointAndPopBtn, ui.modeStayInLaneBtn].forEach(btn => {
             btn.addEventListener('click', () => {
@@ -2139,10 +2293,25 @@ document.addEventListener('DOMContentLoaded', () => {
         
         ui.bgmVolumeSlider.addEventListener('input', (e) => setBgmVolume(e.target.value));
         ui.sfxVolumeSlider.addEventListener('input', (e) => setSfxVolume(e.target.value));
+
+        ui.flipCameraToggle.addEventListener('change', () => {
+            playSound(audio.buttonClick);
+            setCameraFlipped(ui.flipCameraToggle.checked);
+        });
     };
 
     // --- 7. INITIALIZATION ---
     const main = () => {
+        seedTestLevels();
+
+        let savedCameraFlip = false;
+        try {
+            savedCameraFlip = localStorage.getItem(CAMERA_FLIP_KEY) === 'true';
+        } catch (e) {
+            console.warn('Could not read camera flip preference:', e);
+        }
+        setCameraFlipped(savedCameraFlip);
+
         // Service Worker Registration
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('./sw.js')
@@ -2156,9 +2325,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             state.deferredInstallPrompt = e;
             state.isInstallable = true;
-            if (ui.levelSelectionScreen.style.display === 'flex') {
-                ui.installButton.hidden = false;
-            }
+            ui.installButton.hidden = false;
         });
 
         ui.installButton.addEventListener("click", async () => {
@@ -2178,6 +2345,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
         window.addEventListener('appinstalled', (evt) => {
             console.log('App installed');
+            ui.installButton.hidden = true;
+        });
+
+        // Fullscreen toggle
+        const exitFullscreenIcon = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v3a2 2 0 0 1-2 2H4"/><path d="M15 3v3a2 2 0 0 0 2 2h3"/><path d="M9 21v-3a2 2 0 0 0-2-2H4"/><path d="M15 21v-3a2 2 0 0 1 2-2h3"/></svg>';
+        const enterFullscreenIcon = ui.fullscreenBtn.innerHTML;
+
+        ui.fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            } else {
+                document.exitFullscreen().catch(() => {});
+            }
+        });
+
+        document.addEventListener('fullscreenchange', () => {
+            ui.fullscreenBtn.innerHTML = document.fullscreenElement ? exitFullscreenIcon : enterFullscreenIcon;
+        });
+
+        // Force-update: unregister the service worker and clear all caches, then
+        // reload, so a new version loads even where a hard refresh isn't easy (Android).
+        ui.updateBtn.addEventListener('click', async () => {
+            ui.updateBtn.disabled = true;
+            try {
+                if ('serviceWorker' in navigator) {
+                    const registrations = await navigator.serviceWorker.getRegistrations();
+                    await Promise.all(registrations.map(reg => reg.unregister()));
+                }
+                if ('caches' in window) {
+                    const keys = await caches.keys();
+                    await Promise.all(keys.map(key => caches.delete(key)));
+                }
+            } catch (e) {
+                console.warn('Could not fully clear caches during update:', e);
+            } finally {
+                location.reload();
+            }
         });
 
         setupEventListeners();

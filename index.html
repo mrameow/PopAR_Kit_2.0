@@ -10,6 +10,18 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <div class="top-actions">
+        <button class="icon-action-btn" id="fullscreen-btn" type="button" title="Fullscreen" aria-label="Toggle fullscreen">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+        <button class="icon-action-btn" id="install-button" type="button" hidden title="Install App" aria-label="Install app">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+        </button>
+        <button class="icon-action-btn" id="update-btn" type="button" title="Update App" aria-label="Update app">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/></svg>
+        </button>
+    </div>
+
     <div class="container">
         <div class="game-title"><img src="icon/hello-icon-192.png" alt="PopAR Kit 2.0"></div>
         <div class="game-area">
@@ -132,14 +144,17 @@
                             <input type="range" id="sfx-volume" class="volume-slider" min="0" max="1" step="0.01" value="1">
                         </div>
                     </div>
+                    <div class="settings-subsection-title">Camera</div>
+                    <label class="bulk-toggle">
+                        <input type="checkbox" id="flip-camera-toggle">
+                        Flip camera (fix a mirrored view, e.g. on a smartboard)
+                    </label>
                     <div class="settings-subsection-title">Advanced: Custom Google Sheet</div>
                     <div class="level-input-container">
                         <input type="text" id="sheet-name-input" placeholder="Enter a Google Sheet tab name" aria-label="Enter Sheet Tab Name">
                         <button class="btn btn-secondary" id="go-btn">Go!</button>
                     </div>
                 </details>
-
-                <button class="btn" id="install-button" hidden>Install App</button>
 
                 </div>
             </div>
