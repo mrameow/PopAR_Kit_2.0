@@ -19,6 +19,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // combinations — it can silently produce poor/erratic results instead of throwing,
     // so mobile devices skip it entirely and go straight to the CPU delegate.
     const IS_MOBILE_DEVICE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    // Stay in Lane: a random one of these replaces the player's real face each game
+    // (and again whenever tracking is regained after being lost).
+    const ANIMAL_FACE_EMOJIS = ['🐱', '🐶', '🐰', '🐻', '🐼', '🦊', '🐯', '🦁', '🐨', '🐵', '🐸', '🐷'];
+    const HEART_EMOJIS = ['❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎'];
     const WORD_POWER_DWELL_MS = 3000; // how long to hold a lane to confirm the answer
     const DEFAULT_COUNTDOWN_SECONDS = 60; // default quiz-timer countdown length
     const READY_COUNTDOWN_STEPS = [3, 2, 1];
@@ -26,7 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const OBSTACLE_SPAWN_BASE_MS = 2600; // Stay in Lane: average time between falling rocks
     const OBSTACLE_SPAWN_JITTER_MS = 1200;
     const OBSTACLE_FALL_RATIO_PER_SEC = 0.22; // fraction of canvas height fallen per second
-    const OBSTACLE_HIT_ZONE_RATIO = 0.8; // rock becomes "live" for hit-detection past this y fraction
+    const ROCK_HIT_RADIUS = 20; // roughly half the rock emoji's drawn size
     const WASM_PATH = './mediapipe/wasm';
     const HAND_MODEL_PATH = './models/hand_landmarker.task';
     const POSE_MODEL_PATH = './models/pose_landmarker_lite.task';
@@ -407,6 +411,11 @@ document.addEventListener('DOMContentLoaded', () => {
         obstaclesEnabled: true, // Stay in Lane: whether falling rocks are on
         sfxVolume: 1, // matches the sfx-volume slider's default
         cameraFlipped: false,
+        playerFaceEmoji: '🐱', // Stay in Lane: a random cartoon/animal face swapped over the player's real face
+        playerHeartEmoji: '❤️', // Stay in Lane: a random colored heart placed over the player's chest
+        wasPoseTracked: false,
+        faceTargetPx: null,
+        heartTargetPx: null,
     };
 
     const GAME_MODE_HINTS = {
@@ -690,20 +699,6 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.fillText(zone.word, -centerX, centerY);
             ctx.restore();
         });
-
-        // A dashed "danger line" so players can see where a falling rock will hit them.
-        if (state.obstacles.length > 0) {
-            const dangerY = outputCanvas.height * OBSTACLE_HIT_ZONE_RATIO;
-            ctx.save();
-            ctx.strokeStyle = 'rgba(255, 122, 104, 0.7)';
-            ctx.lineWidth = 3;
-            ctx.setLineDash([10, 8]);
-            ctx.beginPath();
-            ctx.moveTo(0, dangerY);
-            ctx.lineTo(outputCanvas.width, dangerY);
-            ctx.stroke();
-            ctx.restore();
-        }
     };
 
     // --- 5g-i. Stay in Lane obstacles (falling rocks to dodge) ---
@@ -725,20 +720,19 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        const zoneWidth = outputCanvas.width / state.wordZones.length;
-        const hitZoneY = outputCanvas.height * OBSTACLE_HIT_ZONE_RATIO;
+        // A hit only counts when a rock visually overlaps the player's face/heart emoji —
+        // not just "being in the right lane" — so it always matches what players see.
+        const targets = [state.faceTargetPx, state.heartTargetPx].filter(Boolean);
         let wasHit = false;
 
         state.obstacles = state.obstacles.filter(rock => {
             rock.y += outputCanvas.height * OBSTACLE_FALL_RATIO_PER_SEC * (dt / 1000);
             if (rock.y > outputCanvas.height + 40) return false; // fell past the bottom
 
-            if (rock.y >= hitZoneY) {
-                const rockLane = Math.min(state.wordZones.length - 1, Math.floor(rock.x / zoneWidth));
-                if (rockLane === state.activeZoneIndex) {
-                    wasHit = true;
-                    return false; // consumed by the hit
-                }
+            const hitTarget = targets.find(t => Math.hypot(rock.x - t.x, rock.y - t.y) < (ROCK_HIT_RADIUS + t.r));
+            if (hitTarget) {
+                wasHit = true;
+                return false; // consumed by the hit
             }
             return true;
         });
@@ -1778,6 +1772,50 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.restore();
     };
 
+    // Stay in Lane: a random cartoon/animal face over the player's real face, and a
+    // random colored heart over their chest — both are also the rocks' actual hit targets.
+    const computeFaceTarget = (pose) => {
+        const nose = pose[0], leftEar = pose[7], rightEar = pose[8];
+        if (!nose || !leftEar || !rightEar) return null;
+        const { outputCanvas: canvas } = ui;
+        const nx = nose.x * canvas.width, ny = nose.y * canvas.height;
+        const lx = leftEar.x * canvas.width, ly = leftEar.y * canvas.height;
+        const rx = rightEar.x * canvas.width, ry = rightEar.y * canvas.height;
+        const earDist = Math.hypot(lx - rx, ly - ry) || 60;
+        const size = Math.max(50, Math.min(260, earDist * 1.9));
+        return { x: nx, y: ny, r: size / 2 };
+    };
+
+    const computeHeartTarget = (pose) => {
+        const leftShoulder = pose[11], rightShoulder = pose[12], leftHip = pose[23], rightHip = pose[24];
+        if (!leftShoulder || !rightShoulder) return null;
+        const { outputCanvas: canvas } = ui;
+        const lsx = leftShoulder.x * canvas.width, lsy = leftShoulder.y * canvas.height;
+        const rsx = rightShoulder.x * canvas.width, rsy = rightShoulder.y * canvas.height;
+        const shoulderWidth = Math.hypot(lsx - rsx, lsy - rsy) || 80;
+        const chestX = (lsx + rsx) / 2;
+        let chestY = (lsy + rsy) / 2;
+        if (leftHip && rightHip) {
+            const hipY = ((leftHip.y + rightHip.y) / 2) * canvas.height;
+            chestY += (hipY - chestY) * 0.35;
+        } else {
+            chestY += shoulderWidth * 0.5;
+        }
+        const size = Math.max(40, Math.min(180, shoulderWidth * 0.75));
+        return { x: chestX, y: chestY, r: size / 2 };
+    };
+
+    const drawEmojiAt = (emoji, x, y, diameter) => {
+        const { ctx } = ui;
+        ctx.save();
+        ctx.font = `${diameter}px "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.scale(-1, 1); // counter-flip so the emoji doesn't render backwards under the mirrored canvas
+        ctx.fillText(emoji, -x, y);
+        ctx.restore();
+    };
+
     function onDetectionResults(handResults, poseResults) {
         const { ctx, outputCanvas } = ui;
         const now = performance.now();
@@ -1797,9 +1835,22 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.handStatus.textContent = tracked ? 'Yes' : 'No';
 
         state.multiHandLandmarks.forEach((landmarks, i) => drawHandGlove(landmarks, i));
-        if (state.poseLandmarks) {
-            drawingUtils.drawConnectors(state.poseLandmarks, PoseLandmarker.POSE_CONNECTIONS, { color: '#00BFFF', lineWidth: 3 });
+        if (isStayInLane && state.poseLandmarks) {
+            // Re-roll the face/heart each time tracking is freshly regained (not every frame),
+            // so it changes if the player steps out of frame and back in, but stays put otherwise.
+            if (!state.wasPoseTracked) {
+                state.playerFaceEmoji = ANIMAL_FACE_EMOJIS[Math.floor(Math.random() * ANIMAL_FACE_EMOJIS.length)];
+                state.playerHeartEmoji = HEART_EMOJIS[Math.floor(Math.random() * HEART_EMOJIS.length)];
+            }
+            state.faceTargetPx = computeFaceTarget(state.poseLandmarks);
+            state.heartTargetPx = computeHeartTarget(state.poseLandmarks);
+            if (state.faceTargetPx) drawEmojiAt(state.playerFaceEmoji, state.faceTargetPx.x, state.faceTargetPx.y, state.faceTargetPx.r * 2);
+            if (state.heartTargetPx) drawEmojiAt(state.playerHeartEmoji, state.heartTargetPx.x, state.heartTargetPx.y, state.heartTargetPx.r * 2);
+        } else {
+            state.faceTargetPx = null;
+            state.heartTargetPx = null;
         }
+        state.wasPoseTracked = isStayInLane && !!state.poseLandmarks;
 
         if (state.gameActive && !state.waitingForNextQuestion && !state.inputLocked) {
             if (isStayInLane) {
@@ -2123,6 +2174,11 @@ document.addEventListener('DOMContentLoaded', () => {
         state.gameActive = true;
         state.obstacles = [];
         state.obstacleSpawnTimer = 0;
+        if (isStayInLane) {
+            state.playerFaceEmoji = ANIMAL_FACE_EMOJIS[Math.floor(Math.random() * ANIMAL_FACE_EMOJIS.length)];
+            state.playerHeartEmoji = HEART_EMOJIS[Math.floor(Math.random() * HEART_EMOJIS.length)];
+            state.wasPoseTracked = false;
+        }
         ui.score.textContent = state.score;
         ui.mainMenuBtn.style.display = 'block';
 
