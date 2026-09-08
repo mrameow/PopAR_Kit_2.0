@@ -414,41 +414,67 @@ document.addEventListener('DOMContentLoaded', () => {
     let poseLandmarker = null;
     let drawingUtils = null;
 
-    const createLandmarker = async (Klass, vision, modelAssetPath, extraOptions) => {
-        try {
-            return await Klass.createFromOptions(vision, {
-                baseOptions: { modelAssetPath, delegate: 'GPU' },
-                ...extraOptions,
-            });
-        } catch (gpuError) {
-            console.warn(`GPU delegate failed for ${modelAssetPath}, falling back to CPU.`, gpuError);
-            return await Klass.createFromOptions(vision, {
-                baseOptions: { modelAssetPath, delegate: 'CPU' },
-                ...extraOptions,
-            });
+    const createLandmarker = async (Klass, vision, modelAssetPath, extraOptions, forceCpu = false) => {
+        if (!forceCpu) {
+            try {
+                return await Klass.createFromOptions(vision, {
+                    baseOptions: { modelAssetPath, delegate: 'GPU' },
+                    ...extraOptions,
+                });
+            } catch (gpuError) {
+                console.warn(`GPU delegate failed for ${modelAssetPath}, falling back to CPU.`, gpuError);
+            }
         }
+        return await Klass.createFromOptions(vision, {
+            baseOptions: { modelAssetPath, delegate: 'CPU' },
+            ...extraOptions,
+        });
     };
 
-    const initLandmarkers = async () => {
-        const vision = await FilesetResolver.forVisionTasks(WASM_PATH);
+    const HAND_LANDMARKER_OPTIONS = {
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+    };
+    const POSE_LANDMARKER_OPTIONS = {
+        runningMode: 'VIDEO',
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+    };
 
-        handLandmarker = await createLandmarker(HandLandmarker, vision, HAND_MODEL_PATH, {
-            runningMode: 'VIDEO',
-            numHands: 2,
-            minHandDetectionConfidence: 0.5,
-            minHandPresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5,
-        });
+    let visionFileset = null;
 
-        poseLandmarker = await createLandmarker(PoseLandmarker, vision, POSE_MODEL_PATH, {
-            runningMode: 'VIDEO',
-            numPoses: 1,
-            minPoseDetectionConfidence: 0.5,
-            minPosePresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5,
-        });
+    const initLandmarkers = async (forceCpu = false) => {
+        visionFileset = visionFileset || await FilesetResolver.forVisionTasks(WASM_PATH);
+
+        handLandmarker = await createLandmarker(HandLandmarker, visionFileset, HAND_MODEL_PATH, HAND_LANDMARKER_OPTIONS, forceCpu);
+        poseLandmarker = await createLandmarker(PoseLandmarker, visionFileset, POSE_MODEL_PATH, POSE_LANDMARKER_OPTIONS, forceCpu);
 
         drawingUtils = new DrawingUtils(ui.ctx);
+    };
+
+    // If the GPU delegate keeps throwing mid-stream (common on some mobile GPU drivers,
+    // even when landmarker creation itself succeeded), rebuild both landmarkers on CPU.
+    let detectionErrorCount = 0;
+    let fallingBackToCpu = false;
+    const handleDetectionError = async (err) => {
+        console.warn('Landmarker detection error:', err);
+        detectionErrorCount++;
+        if (detectionErrorCount >= 5 && !fallingBackToCpu) {
+            fallingBackToCpu = true;
+            console.warn('Repeated detection errors — rebuilding hand/pose landmarkers on CPU.');
+            try {
+                await initLandmarkers(true);
+            } catch (rebuildError) {
+                console.error('Could not rebuild landmarkers on CPU:', rebuildError);
+            }
+            detectionErrorCount = 0;
+            fallingBackToCpu = false;
+        }
     };
 
     // --- 5. CORE FUNCTIONS ---
@@ -1632,25 +1658,40 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.cameraBtn.disabled = true;
         ui.cameraBtn.textContent = 'Loading...';
 
+        let lastProcessedAt = 0;
+        const MIN_PROCESS_INTERVAL_MS = 33; // cap detection at ~30fps so slower/mobile devices stay smooth
+
         const processVideo = () => {
             // Note: we deliberately do NOT skip frames based on video.currentTime — on some
             // devices/browsers that value doesn't reliably advance every frame, which would
-            // silently freeze detection. Running detectForVideo every rAF tick costs a little
-            // redundant compute at worst, but never stalls tracking.
-            if (!ui.videoElement.paused && !ui.videoElement.ended && handLandmarker) {
-                const now = performance.now();
-                const handResults = handLandmarker.detectForVideo(ui.videoElement, now);
-                // Pose is only needed (and only run) during active Word Power gameplay, to save compute.
-                const needsPose = poseLandmarker && state.gameActive && state.gameMode === 'stayInLane';
-                const poseResults = needsPose ? poseLandmarker.detectForVideo(ui.videoElement, now) : null;
-                onDetectionResults(handResults, poseResults);
+            // silently freeze detection. We throttle by wall-clock time instead (performance.now()
+            // always advances), which still keeps tracking smooth on slower/mobile hardware.
+            const now = performance.now();
+            if (!ui.videoElement.paused && !ui.videoElement.ended && handLandmarker && (now - lastProcessedAt) >= MIN_PROCESS_INTERVAL_MS) {
+                lastProcessedAt = now;
+                try {
+                    const handResults = handLandmarker.detectForVideo(ui.videoElement, now);
+                    // Pose is only needed (and only run) during active Stay in Lane gameplay, to save compute.
+                    const needsPose = poseLandmarker && state.gameActive && state.gameMode === 'stayInLane';
+                    const poseResults = needsPose ? poseLandmarker.detectForVideo(ui.videoElement, now) : null;
+                    onDetectionResults(handResults, poseResults);
+                    detectionErrorCount = 0;
+                } catch (detectionError) {
+                    handleDetectionError(detectionError);
+                }
             }
             requestAnimationFrame(processVideo);
         };
 
         try {
             const [stream] = await Promise.all([
-                navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } }),
+                navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'user',
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                    },
+                }),
                 initLandmarkers(),
             ]);
             ui.videoElement.srcObject = stream;
