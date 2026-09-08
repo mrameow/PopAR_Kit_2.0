@@ -752,17 +752,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const drawObstacles = () => {
         if (!state.obstacles || state.obstacles.length === 0) return;
-        const { ctx } = ui;
-
-        state.obstacles.forEach(rock => {
-            ctx.save();
-            ctx.font = '40px Arial';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.scale(-1, 1);
-            ctx.fillText('🪨', -rock.x, rock.y);
-            ctx.restore();
-        });
+        state.obstacles.forEach(rock => drawEmojiAt('🪨', rock.x, rock.y, 40));
     };
 
     const showFeedback = (message, variant) => {
@@ -1739,35 +1729,42 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
 
-        // Dark outline pass first, then a brighter fill pass on top — gives each
-        // puffy "glove finger" segment a clean cartoon border.
-        [{ width: lineWidth + 6, color: colors.dark }, { width: lineWidth, color: colors.line }].forEach(pass => {
-            ctx.lineWidth = pass.width;
-            ctx.strokeStyle = pass.color;
-            for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
-                const [ax, ay] = point(start);
-                const [bx, by] = point(end);
-                ctx.beginPath();
-                ctx.moveTo(ax, ay);
-                ctx.lineTo(bx, by);
-                ctx.stroke();
-            }
-        });
+        // Batch every finger-bone segment into a single path, then stroke it just twice
+        // (dark outline, bright fill) instead of once per segment — dozens fewer draw
+        // calls per hand, which matters a lot on slower mobile GPUs.
+        const segmentPath = new Path2D();
+        for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
+            const [ax, ay] = point(start);
+            const [bx, by] = point(end);
+            segmentPath.moveTo(ax, ay);
+            segmentPath.lineTo(bx, by);
+        }
+        ctx.lineWidth = lineWidth + 6;
+        ctx.strokeStyle = colors.dark;
+        ctx.stroke(segmentPath);
+        ctx.lineWidth = lineWidth;
+        ctx.strokeStyle = colors.line;
+        ctx.stroke(segmentPath);
 
-        // Round, filled joints so segments blend smoothly — fingertips a little bigger.
+        // Same batching trick for the round joints — one fill for regular joints, one
+        // fill + one outline stroke for the (slightly bigger) fingertips.
+        const jointsPath = new Path2D();
+        const tipsPath = new Path2D();
         landmarks.forEach((lm, i) => {
             const [x, y] = point(i);
             const isTip = HAND_FINGERTIP_INDICES.has(i);
-            ctx.beginPath();
-            ctx.arc(x, y, isTip ? lineWidth * 0.62 : lineWidth * 0.5, 0, Math.PI * 2);
-            ctx.fillStyle = isTip ? colors.tip : colors.line;
-            ctx.fill();
-            if (isTip) {
-                ctx.lineWidth = 3;
-                ctx.strokeStyle = colors.dark;
-                ctx.stroke();
-            }
+            const r = isTip ? lineWidth * 0.62 : lineWidth * 0.5;
+            const path = isTip ? tipsPath : jointsPath;
+            path.moveTo(x + r, y);
+            path.arc(x, y, r, 0, Math.PI * 2);
         });
+        ctx.fillStyle = colors.line;
+        ctx.fill(jointsPath);
+        ctx.fillStyle = colors.tip;
+        ctx.fill(tipsPath);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = colors.dark;
+        ctx.stroke(tipsPath);
 
         ctx.restore();
     };
@@ -1805,14 +1802,32 @@ document.addEventListener('DOMContentLoaded', () => {
         return { x: chestX, y: chestY, r: size / 2 };
     };
 
+    // Re-rasterizing a color emoji glyph via fillText every single frame is surprisingly
+    // costly on slower mobile GPUs, especially at the large sizes used here. Instead,
+    // render each emoji once to an offscreen canvas and cheaply drawImage/blit it after.
+    const emojiBitmapCache = new Map();
+    const EMOJI_BITMAP_SIZE = 128;
+    const getEmojiBitmap = (emoji) => {
+        let bitmap = emojiBitmapCache.get(emoji);
+        if (bitmap) return bitmap;
+        bitmap = document.createElement('canvas');
+        bitmap.width = EMOJI_BITMAP_SIZE;
+        bitmap.height = EMOJI_BITMAP_SIZE;
+        const bctx = bitmap.getContext('2d');
+        bctx.font = `${EMOJI_BITMAP_SIZE * 0.82}px "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+        bctx.textAlign = 'center';
+        bctx.textBaseline = 'middle';
+        bctx.fillText(emoji, EMOJI_BITMAP_SIZE / 2, EMOJI_BITMAP_SIZE / 2 + EMOJI_BITMAP_SIZE * 0.03);
+        emojiBitmapCache.set(emoji, bitmap);
+        return bitmap;
+    };
+
     const drawEmojiAt = (emoji, x, y, diameter) => {
         const { ctx } = ui;
+        const bitmap = getEmojiBitmap(emoji);
         ctx.save();
-        ctx.font = `${diameter}px "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
         ctx.scale(-1, 1); // counter-flip so the emoji doesn't render backwards under the mirrored canvas
-        ctx.fillText(emoji, -x, y);
+        ctx.drawImage(bitmap, -x - diameter / 2, y - diameter / 2, diameter, diameter);
         ctx.restore();
     };
 
