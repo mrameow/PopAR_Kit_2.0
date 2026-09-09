@@ -22,6 +22,14 @@
     font-display: swap;
 }
 
+@font-face {
+    font-family: 'Tulisan Bacaan';
+    src: url('fonts/TulisanBacaan-Regular.otf') format('opentype');
+    font-weight: 400 700;
+    font-style: normal;
+    font-display: swap;
+}
+
 :root {
     /* --- Brand accents (4 families) --- */
     --sky-100: #DFF4FC;
@@ -72,6 +80,14 @@
 
     --font-heading: 'Baloo 2', 'Segoe UI', system-ui, -apple-system, sans-serif;
     --font-body: 'Baloo 2', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    /* Used specifically for the words/sentences kids are reading and spelling
+       (Word Power, Super Sentence) — a single-story 'a' reads better for early readers. */
+    --font-game: 'Tulisan Bacaan', 'Baloo 2', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+/* Settings: "Use the classic font" reverts the game's reading text to the regular UI font. */
+body.classic-game-font {
+    --font-game: 'Baloo 2', 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
 * {
@@ -1094,7 +1110,7 @@ body {
 }
 
 .sentence-word {
-    font-family: var(--font-body);
+    font-family: var(--font-game);
     font-size: clamp(15px, 3.2vmin, 24px);
     font-weight: 700;
     color: var(--ink);
@@ -1153,7 +1169,7 @@ body {
     justify-content: center;
     font-size: clamp(25px, 5vmin, 40px);
     font-weight: 700;
-    font-family: var(--font-heading);
+    font-family: var(--font-game);
     color: var(--ink);
     box-sizing: border-box;
 }

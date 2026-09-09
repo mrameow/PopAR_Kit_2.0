@@ -15,6 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const CUSTOM_WORD_LISTS_KEY = 'popar_custom_word_lists';
     const SUPER_SENTENCE_LISTS_KEY = 'popar_super_sentence_lists';
     const CAMERA_FLIP_KEY = 'popar_camera_flipped';
+    const LOW_POWER_MODE_KEY = 'popar_low_power_mode';
+    const CLASSIC_FONT_KEY = 'popar_classic_game_font';
     // MediaPipe's GPU (WebGL) delegate is unreliable on a lot of mobile GPU/driver
     // combinations — it can silently produce poor/erratic results instead of throwing,
     // so mobile devices skip it entirely and go straight to the CPU delegate.
@@ -110,6 +112,8 @@ document.addEventListener('DOMContentLoaded', () => {
         bgmVolumeSlider: document.getElementById('bgm-volume'),
         sfxVolumeSlider: document.getElementById('sfx-volume'),
         flipCameraToggle: document.getElementById('flip-camera-toggle'),
+        lowPowerModeToggle: document.getElementById('low-power-mode-toggle'),
+        classicFontToggle: document.getElementById('classic-font-toggle'),
         finalScore: document.getElementById('final-score'),
         handStatus: document.getElementById('hand-status'),
         handStatusLabel: document.getElementById('hand-status-label'),
@@ -411,6 +415,8 @@ document.addEventListener('DOMContentLoaded', () => {
         obstaclesEnabled: true, // Stay in Lane: whether falling rocks are on
         sfxVolume: 1, // matches the sfx-volume slider's default
         cameraFlipped: false,
+        lowPowerMode: false, // trades tracking smoothness for less compute, e.g. on a smartboard
+        classicGameFont: false, // use the regular Baloo 2 font instead of the reading font
         playerFaceEmoji: '🐱', // Stay in Lane: a random cartoon/animal face swapped over the player's real face
         playerHeartEmoji: '❤️', // Stay in Lane: a random colored heart placed over the player's chest
         wasPoseTracked: false,
@@ -565,10 +571,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const fitFontSize = (ctx, text, maxWidth, maxFontSize) => {
         let fontSize = maxFontSize;
-        ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
+        ctx.font = `700 ${fontSize}px ${getGameFontStack()}`;
         while (ctx.measureText(text).width > maxWidth && fontSize > 10) {
             fontSize -= 2;
-            ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
+            ctx.font = `700 ${fontSize}px ${getGameFontStack()}`;
         }
         return fontSize;
     };
@@ -578,7 +584,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const { width: canvasWidth, height: canvasHeight } = ui.outputCanvas;
         const baseRadius = Math.min(canvasWidth, canvasHeight) * 0.05;
 
-        ui.ctx.font = `700 ${baseRadius * 0.7}px 'Baloo 2', Arial`;
+        ui.ctx.font = `700 ${baseRadius * 0.7}px ${getGameFontStack()}`;
         const radii = options.map(label => {
             if (label.length <= 1) return baseRadius;
             const textWidth = ui.ctx.measureText(label).width;
@@ -648,11 +654,14 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.fillStyle = '#26333B';
             const maxTextWidth = bubble.radius * 1.6;
             const fontSize = fitFontSize(ctx, bubble.label, maxTextWidth, bubble.radius * 0.8);
-            ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
+            ctx.font = `700 ${fontSize}px ${getGameFontStack()}`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.scale(-1, 1);
-            ctx.fillText(bubble.label, -x, y);
+            // Counter-flip so the letter reads correctly under the mirrored canvas —
+            // but only when the canvas is actually mirrored (Flip Camera setting off).
+            const mirror = state.cameraFlipped ? 1 : -1;
+            ctx.scale(mirror, 1);
+            ctx.fillText(bubble.label, mirror * x, y);
             ctx.restore();
         });
     };
@@ -693,12 +702,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const fontSize = fitFontSize(ctx, zone.word, maxTextWidth, Math.min(zoneWidth * 0.16, 32));
 
             ctx.fillStyle = '#fff';
-            ctx.font = `700 ${fontSize}px 'Baloo 2', Arial`;
+            ctx.font = `700 ${fontSize}px ${getGameFontStack()}`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            // Counter-flip so the word reads correctly under the mirrored canvas
-            ctx.scale(-1, 1);
-            ctx.fillText(zone.word, -centerX, centerY);
+            // Counter-flip so the word reads correctly under the mirrored canvas —
+            // but only when the canvas is actually mirrored (Flip Camera setting off).
+            const mirror = state.cameraFlipped ? 1 : -1;
+            ctx.scale(mirror, 1);
+            ctx.fillText(zone.word, mirror * centerX, centerY);
             ctx.restore();
         });
     };
@@ -811,6 +822,46 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem(CAMERA_FLIP_KEY, flipped ? 'true' : 'false');
         } catch (e) {
             console.warn('Could not save camera flip preference:', e);
+        }
+    };
+
+    // Low-power mode: lower camera resolution, CPU delegate, and a lower detection
+    // rate — for genuinely weak hardware (e.g. a smartboard) where even the mobile
+    // optimizations aren't enough. Applies live if the camera is already running.
+    const setLowPowerMode = (enabled) => {
+        state.lowPowerMode = enabled;
+        ui.lowPowerModeToggle.checked = enabled;
+        try {
+            localStorage.setItem(LOW_POWER_MODE_KEY, enabled ? 'true' : 'false');
+        } catch (e) {
+            console.warn('Could not save low-power mode preference:', e);
+        }
+
+        if (!state.cameraInitialized) return;
+
+        const track = ui.videoElement.srcObject && ui.videoElement.srcObject.getVideoTracks()[0];
+        if (track) {
+            const dims = enabled ? { width: 480, height: 360 } : { width: 640, height: 480 };
+            track.applyConstraints({ width: { ideal: dims.width }, height: { ideal: dims.height } }).catch(() => {});
+        }
+        initLandmarkers(IS_MOBILE_DEVICE || enabled).catch(e => {
+            console.warn('Could not rebuild landmarkers for low-power mode:', e);
+        });
+    };
+
+    // Settings: "Use the classic font" swaps the canvas-drawn game text (bubbles,
+    // lane words) back to Baloo 2 — the CSS side (letter boxes, sentences) is handled
+    // by the .classic-game-font class toggling the --font-game variable.
+    const getGameFontStack = () => state.classicGameFont ? "'Baloo 2', Arial" : "'Tulisan Bacaan', 'Baloo 2', Arial";
+
+    const setClassicGameFont = (enabled) => {
+        state.classicGameFont = enabled;
+        ui.classicFontToggle.checked = enabled;
+        document.body.classList.toggle('classic-game-font', enabled);
+        try {
+            localStorage.setItem(CLASSIC_FONT_KEY, enabled ? 'true' : 'false');
+        } catch (e) {
+            console.warn('Could not save classic font preference:', e);
         }
     };
 
@@ -1649,15 +1700,16 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.cameraBtn.textContent = 'Loading...';
 
         let lastProcessedAt = 0;
-        const MIN_PROCESS_INTERVAL_MS = 33; // cap detection at ~30fps so slower/mobile devices stay smooth
 
         const processVideo = () => {
             // Note: we deliberately do NOT skip frames based on video.currentTime — on some
             // devices/browsers that value doesn't reliably advance every frame, which would
             // silently freeze detection. We throttle by wall-clock time instead (performance.now()
             // always advances), which still keeps tracking smooth on slower/mobile hardware.
+            // Low-power mode throttles further (~18fps) for genuinely weak devices like a smartboard.
             const now = performance.now();
-            if (!ui.videoElement.paused && !ui.videoElement.ended && handLandmarker && (now - lastProcessedAt) >= MIN_PROCESS_INTERVAL_MS) {
+            const minProcessIntervalMs = state.lowPowerMode ? 55 : 33;
+            if (!ui.videoElement.paused && !ui.videoElement.ended && handLandmarker && (now - lastProcessedAt) >= minProcessIntervalMs) {
                 lastProcessedAt = now;
                 try {
                     // Hand tracking isn't used at all in Stay in Lane, and pose tracking is only
@@ -1677,15 +1729,16 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         try {
+            const cameraDims = state.lowPowerMode ? { width: 480, height: 360 } : { width: 640, height: 480 };
             const [stream] = await Promise.all([
                 navigator.mediaDevices.getUserMedia({
                     video: {
                         facingMode: 'user',
-                        width: { ideal: 640 },
-                        height: { ideal: 480 },
+                        width: { ideal: cameraDims.width },
+                        height: { ideal: cameraDims.height },
                     },
                 }),
-                initLandmarkers(IS_MOBILE_DEVICE),
+                initLandmarkers(IS_MOBILE_DEVICE || state.lowPowerMode),
             ]);
             ui.videoElement.srcObject = stream;
 
@@ -1833,9 +1886,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const drawEmojiAt = (emoji, x, y, diameter) => {
         const { ctx } = ui;
         const bitmap = getEmojiBitmap(emoji);
+        // Counter-flip so the emoji doesn't render backwards under the mirrored canvas —
+        // but only when the canvas is actually mirrored (Flip Camera setting off).
+        const mirror = state.cameraFlipped ? 1 : -1;
         ctx.save();
-        ctx.scale(-1, 1); // counter-flip so the emoji doesn't render backwards under the mirrored canvas
-        ctx.drawImage(bitmap, -x - diameter / 2, y - diameter / 2, diameter, diameter);
+        ctx.scale(mirror, 1);
+        ctx.drawImage(bitmap, mirror * x - diameter / 2, y - diameter / 2, diameter, diameter);
         ctx.restore();
     };
 
@@ -2501,6 +2557,16 @@ document.addEventListener('DOMContentLoaded', () => {
             playSound(audio.buttonClick);
             setCameraFlipped(ui.flipCameraToggle.checked);
         });
+
+        ui.lowPowerModeToggle.addEventListener('change', () => {
+            playSound(audio.buttonClick);
+            setLowPowerMode(ui.lowPowerModeToggle.checked);
+        });
+
+        ui.classicFontToggle.addEventListener('change', () => {
+            playSound(audio.buttonClick);
+            setClassicGameFont(ui.classicFontToggle.checked);
+        });
     };
 
     // --- 7. INITIALIZATION ---
@@ -2514,6 +2580,23 @@ document.addEventListener('DOMContentLoaded', () => {
             console.warn('Could not read camera flip preference:', e);
         }
         setCameraFlipped(savedCameraFlip);
+
+        let savedLowPowerMode = false;
+        try {
+            savedLowPowerMode = localStorage.getItem(LOW_POWER_MODE_KEY) === 'true';
+        } catch (e) {
+            console.warn('Could not read low-power mode preference:', e);
+        }
+        state.lowPowerMode = savedLowPowerMode;
+        ui.lowPowerModeToggle.checked = savedLowPowerMode;
+
+        let savedClassicFont = false;
+        try {
+            savedClassicFont = localStorage.getItem(CLASSIC_FONT_KEY) === 'true';
+        } catch (e) {
+            console.warn('Could not read classic font preference:', e);
+        }
+        setClassicGameFont(savedClassicFont);
 
         // Service Worker Registration
         if ('serviceWorker' in navigator) {

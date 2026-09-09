@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'popar-kit-cache-v46';
+const CACHE_NAME = 'popar-kit-cache-v50';
 const urlsToCache = [
   './',
   './index.html',
@@ -12,6 +12,7 @@ const urlsToCache = [
   './icon/hello-icon-512.png',
   './fonts/Baloo2-Bold.woff2',
   './fonts/Baloo2-SemiBold.woff2',
+  './fonts/TulisanBacaan-Regular.otf',
   './mediapipe/vision_bundle.mjs',
   './mediapipe/wasm/vision_wasm_internal.js',
   './mediapipe/wasm/vision_wasm_internal.wasm',
