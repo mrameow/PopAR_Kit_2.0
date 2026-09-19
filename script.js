@@ -1872,10 +1872,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const wx = wrist.x * canvas.width, wy = wrist.y * canvas.height;
         const mx = middleMcp.x * canvas.width, my = middleMcp.y * canvas.height;
         const handLen = Math.hypot(mx - wx, my - wy) || 1;
+        // Min/max thickness scale with the canvas's own size (not fixed px) so the glove
+        // stays proportional to the hand on small phone screens instead of looking
+        // oversized — a fixed px floor/ceiling would dominate a small mobile canvas.
+        const minLine = canvas.width * (isLowPower ? 0.0025 : 0.0125);
+        const maxLine = canvas.width * (isLowPower ? 0.005 : 0.0325);
         const lineWidth = isLowPower
-            ? Math.max(2, Math.min(4, handLen * 0.05))
-            : Math.max(10, Math.min(26, handLen * 0.34));
-        const outlineExtra = isLowPower ? 1.5 : 6;
+            ? Math.max(minLine, Math.min(maxLine, handLen * 0.05))
+            : Math.max(minLine, Math.min(maxLine, handLen * 0.34));
+        const outlineExtra = canvas.width * (isLowPower ? 0.001875 : 0.0075);
         const jointRadiusRegular = isLowPower ? lineWidth * 1.4 : lineWidth * 0.5;
         const jointRadiusTip = isLowPower ? lineWidth * 2.2 : lineWidth * 0.62;
 
