@@ -41,36 +41,38 @@
     <div class="container">
         <div class="game-title"><img src="icon/hello-icon-192.png" alt="PopAR Kit 2.0"></div>
         <div class="game-area">
-            <div class="video-container">
-                <video id="video-input" playsinline></video>
-                <canvas id="output-canvas"></canvas>
-                <div class="countdown-overlay" id="countdown-overlay"></div>
+            <div class="camera-panel">
+                <div class="video-container">
+                    <video id="video-input" playsinline></video>
+                    <canvas id="output-canvas"></canvas>
+                    <div class="countdown-overlay" id="countdown-overlay"></div>
+                </div>
+
+                <div class="score-container">
+                    <div class="score">Score: <span id="score">0</span></div>
+                    <div class="question-counter">Question: <span id="question-counter">0/X</span></div>
+                </div>
+
+                <div class="timer-container">
+                    <div class="timer">Time: <span id="timer">0s</span></div>
+                </div>
+
+                <div class="feedback" id="feedback"></div>
+
+                <div class="hand-indicator">
+                    <span id="hand-status-label">Hand</span> detected: <span id="hand-status">No</span>
+                </div>
+
+                <button class="btn main-menu-btn" id="main-menu-btn">Main Menu</button>
             </div>
 
-            <div class="score-container">
-                <div class="score">Score: <span id="score">0</span></div>
-                <div class="question-counter">Question: <span id="question-counter">0/X</span></div>
-            </div>
-
-            <div class="timer-container">
-                <div class="timer">Time: <span id="timer">0s</span></div>
-            </div>
-
-            <div class="word-display">
+            <div class="content-panel" id="content-panel">
                 <div id="image-placeholder" style="display: none;">
                     <img id="word-image" src="" alt="Word to spell">
                 </div>
                 <div class="word-container" id="word-container">
                     </div>
             </div>
-
-            <div class="feedback" id="feedback"></div>
-
-            <div class="hand-indicator">
-                <span id="hand-status-label">Hand</span> detected: <span id="hand-status">No</span>
-            </div>
-
-            <button class="btn main-menu-btn" id="main-menu-btn">Main Menu</button>
 
             <div class="level-selection-screen" id="level-selection-screen" style="display: none;">
                 <h1>PopAR Kit 2.0</h1>

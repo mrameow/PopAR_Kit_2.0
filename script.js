@@ -121,6 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
         videoContainer: document.querySelector('.video-container'),
         wordContainer: document.getElementById('word-container'),
         imagePlaceholder: document.getElementById('image-placeholder'),
+        contentPanel: document.getElementById('content-panel'),
         wordImage: document.getElementById('word-image'),
         feedback: document.getElementById('feedback'),
         startScreenTitle: document.getElementById('start-screen-title'),
@@ -540,13 +541,53 @@ document.addEventListener('DOMContentLoaded', () => {
         ui.videoElement.style.height = `${canvasHeight}px`;
     };
 
+    // Sized in JS (not CSS aspect-ratio, which can't cleanly respect two independent
+    // caps at once) so the picture is always a square that's the largest that fits
+    // both the content panel's height AND a share of its width — never so wide it
+    // crowds out the letters/words sitting next to it.
+    const sizeImagePlaceholder = () => {
+        const panel = ui.contentPanel;
+        const panelStyle = getComputedStyle(panel);
+        const paddingY = parseFloat(panelStyle.paddingTop) + parseFloat(panelStyle.paddingBottom);
+        const paddingX = parseFloat(panelStyle.paddingLeft) + parseFloat(panelStyle.paddingRight);
+        const availableHeight = panel.clientHeight - paddingY;
+        const availableWidth = panel.clientWidth - paddingX;
+        const size = Math.max(50, Math.min(availableHeight, availableWidth * 0.42));
+        ui.imagePlaceholder.style.width = `${size}px`;
+        ui.imagePlaceholder.style.height = `${size}px`;
+    };
+
+    // Spelling boxes must always stay in one row, so students don't get confused
+    // about letter order — see fitLetterRowToContainer(), called after each render.
+    const LETTER_SCALE_MIN = 0.45;
+
+    const fitLetterRowToContainer = () => {
+        const el = ui.wordContainer;
+        if (!el.classList.contains('single-line')) return;
+        el.style.removeProperty('--letter-scale');
+        const available = el.clientWidth;
+        if (available <= 0) return;
+
+        // Shrinking changes gaps/margins non-linearly (they have their own minimums),
+        // so nudge the scale down a few times rather than trusting a single estimate.
+        let scale = 1;
+        for (let i = 0; i < 6; i++) {
+            const needed = el.scrollWidth;
+            if (needed <= available || scale <= LETTER_SCALE_MIN) break;
+            scale = Math.max(LETTER_SCALE_MIN, scale * (available / needed) * 0.95);
+            el.style.setProperty('--letter-scale', scale);
+        }
+    };
+
     const displayWord = (word, missingIndex) => {
+        ui.wordContainer.classList.add('single-line');
         ui.wordContainer.innerHTML = word.split('').map((letter, i) =>
             `<div class="letter-box ${i === missingIndex ? 'missing' : ''}">${i === missingIndex ? '?' : letter}</div>`
         ).join('');
     };
 
     const displaySpellingWord = (word, revealIndex) => {
+        ui.wordContainer.classList.add('single-line');
         ui.wordContainer.innerHTML = word.split('').map((letter, i) => {
             if (i < revealIndex) return `<div class="letter-box">${letter}</div>`;
             if (i === revealIndex) return `<div class="letter-box missing">?</div>`;
@@ -556,6 +597,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const displayWordPowerBlank = (question) => {
         const { word, picture } = question;
+        ui.wordContainer.classList.add('single-line');
         // With a picture, the whole word stays hidden — the picture is the only clue.
         // Without a picture, reveal the first letter so the guess is fair among 3 word options.
         ui.wordContainer.innerHTML = word.split('').map((letter, i) => {
@@ -565,6 +607,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const displaySentenceBlank = (tokens, blankIndex, revealWord) => {
+        ui.wordContainer.classList.remove('single-line');
         ui.wordContainer.innerHTML = tokens.map((token, i) => {
             if (i === blankIndex) {
                 return revealWord
@@ -672,6 +715,19 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
+    // Used by the dwell-progress pill below each lane's word — kept independent of
+    // ctx.roundRect for consistent rendering across browsers.
+    const traceRoundedRect = (ctx, x, y, w, h, r) => {
+        const radius = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.arcTo(x + w, y, x + w, y + h, radius);
+        ctx.arcTo(x + w, y + h, x, y + h, radius);
+        ctx.arcTo(x, y + h, x, y, radius);
+        ctx.arcTo(x, y, x + w, y, radius);
+        ctx.closePath();
+    };
+
     const drawWordZones = () => {
         if (!state.wordZones || state.wordZones.length === 0) return;
         const { ctx, outputCanvas } = ui;
@@ -696,12 +752,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.stroke();
             }
 
-            if (progress > 0) {
-                const barHeight = 14;
-                ctx.fillStyle = '#3DDC97';
-                ctx.fillRect(x + 8, outputCanvas.height - barHeight - 8, (zoneWidth - 16) * progress, barHeight);
-            }
-
             const centerX = x + zoneWidth / 2;
             const centerY = outputCanvas.height / 2;
             const maxTextWidth = zoneWidth - 24;
@@ -717,6 +767,36 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.scale(mirror, 1);
             ctx.fillText(zone.word, mirror * centerX, centerY);
             ctx.restore();
+
+            // The "hold here" progress pill lives just below the word, in the middle of
+            // the lane — not pinned to the canvas edges, so it can never end up hidden
+            // behind other UI or squeezed off-screen on a short portrait canvas.
+            if (isActive) {
+                const barWidth = Math.min(zoneWidth * 0.62, 170);
+                const barHeight = Math.max(10, Math.min(zoneWidth * 0.045, 16));
+                const barX = centerX - barWidth / 2;
+                const barY = centerY + fontSize / 2 + barHeight * 0.9;
+
+                ctx.save();
+                traceRoundedRect(ctx, barX, barY, barWidth, barHeight, barHeight / 2);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+                ctx.fill();
+
+                if (progress > 0) {
+                    ctx.save();
+                    traceRoundedRect(ctx, barX, barY, barWidth, barHeight, barHeight / 2);
+                    ctx.clip();
+                    const gradient = ctx.createLinearGradient(barX, 0, barX + barWidth, 0);
+                    gradient.addColorStop(0, '#3DB8E8');
+                    gradient.addColorStop(1, '#3DDC97');
+                    ctx.shadowColor = 'rgba(61, 220, 151, 0.7)';
+                    ctx.shadowBlur = 10;
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(barX, barY, barWidth * progress, barHeight);
+                    ctx.restore();
+                }
+                ctx.restore();
+            }
         });
     };
 
@@ -779,8 +859,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const variantClass = variant === true ? 'correct' : variant === false ? 'incorrect' : variant;
         ui.feedback.textContent = message;
         ui.feedback.className = `feedback ${variantClass}`;
-        ui.feedback.style.opacity = 1;
-        setTimeout(() => { ui.feedback.style.opacity = 0; }, 1500);
+        void ui.feedback.offsetWidth; // restart the pop-in animation even if it's already showing
+        ui.feedback.classList.add('visible');
+        setTimeout(() => { ui.feedback.classList.remove('visible'); }, 1500);
 
         if (variantClass === 'hit') return; // obstacle hits don't touch the word card
 
@@ -2046,9 +2127,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (question.picture) {
-            const wordContainerHeight = ui.wordContainer.offsetHeight;
-            ui.imagePlaceholder.style.height = `${wordContainerHeight * 1.5}px`;
-            ui.imagePlaceholder.style.width = `${ui.wordContainer.offsetWidth}px`;
+            sizeImagePlaceholder();
             ui.imagePlaceholder.style.display = 'flex';
 
             // Avoid re-fetching/flashing the same picture between letters in hard mode
@@ -2076,6 +2155,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         ui.questionCounter.textContent = `${state.currentQuestionIndex + 1}/${state.selectedQuestions.length}`;
+        fitLetterRowToContainer();
 
         // Stay in Lane gets a fresh 3-2-1 countdown before every question, so players
         // have time to step back to a neutral spot before the lanes go live.
@@ -2128,7 +2208,9 @@ document.addEventListener('DOMContentLoaded', () => {
             ui.score.textContent = state.score;
             showFeedback("Correct! 🎉", true);
         } else {
-            showFeedback("Try again! 🤔", false);
+            // This ends the question and reveals the answer (no more attempts here),
+            // so the wording shouldn't promise a retry the way the Hard mode one does.
+            showFeedback("Not quite! 👀", false);
         }
 
         setTimeout(() => {
@@ -2171,7 +2253,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Hard mode: don't fail the whole word on one wrong letter — just remove that
         // wrong bubble and let the player keep guessing the same letter with what's left.
         if (question.hardMode) {
-            showFeedback("Try again! 🤔", false);
+            showFeedback("Try again! 💪", false);
             return;
         }
 
@@ -2400,8 +2482,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 6. EVENT LISTENERS ---
     const setupEventListeners = () => {
-        window.addEventListener('resize', updateCanvasSize);
-        window.addEventListener('orientationchange', updateCanvasSize);
+        const resizeGameLayout = () => {
+            updateCanvasSize();
+            if (ui.imagePlaceholder.style.display !== 'none') sizeImagePlaceholder();
+            fitLetterRowToContainer();
+        };
+        window.addEventListener('resize', resizeGameLayout);
+        window.addEventListener('orientationchange', resizeGameLayout);
         
         ui.cameraBtn.addEventListener('click', initCamera);
         ui.restartBtn.addEventListener('click', () => { playSound(audio.buttonClick); showLevelSelectionScreen(); });
