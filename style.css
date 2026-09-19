@@ -157,14 +157,15 @@ body {
     position: relative;
     /* A fixed share of the game area's height (not content-sized) — this keeps its
        size deterministic instead of depending on the picture's own JS-computed
-       size, which would otherwise create a circular measure-then-resize loop. */
-    flex: 0 0 34%;
+       size, which would otherwise create a circular measure-then-resize loop.
+       Kept as a slim strip so the camera stays the dominant, focal area. */
+    flex: 0 0 clamp(78px, 20%, 120px);
     display: flex;
     flex-direction: row;
     align-items: center;
     justify-content: center;
-    gap: clamp(10px, 2vmin, 20px);
-    padding: clamp(10px, 2vmin, 18px);
+    gap: clamp(8px, 1.6vmin, 16px);
+    padding: clamp(8px, 1.6vmin, 14px);
     background: var(--surface-2);
     border-top: 1px solid var(--line);
     overflow: auto;
@@ -526,6 +527,14 @@ body {
     padding: 20px;
 }
 
+.menu-sidebar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    flex-shrink: 0;
+}
+
 /* --- Game mode selector --- */
 .game-mode-selector {
     display: flex;
@@ -597,6 +606,85 @@ body {
     flex-direction: column;
     align-items: center;
     padding-bottom: 3vmin;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+}
+
+.menu-scroll-area::-webkit-scrollbar {
+    width: 8px;
+}
+
+.menu-scroll-area::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 4px;
+}
+
+.menu-scroll-area::-webkit-scrollbar-thumb:hover {
+    background: var(--sky-500);
+}
+
+/* On a wide landscape screen, the menu has plenty of horizontal room to spare —
+   move the title/mode-picker into a sidebar and let the sections flow as a grid
+   instead of one long centered column with empty space on both sides. */
+@media (orientation: landscape) and (min-width: 700px) {
+    .level-selection-screen {
+        flex-direction: row;
+        align-items: stretch;
+        justify-content: flex-start;
+        padding: 0;
+    }
+
+    .menu-sidebar {
+        width: clamp(220px, 26vw, 300px);
+        flex: 0 0 clamp(220px, 26vw, 300px);
+        height: 100%;
+        justify-content: center;
+        gap: clamp(10px, 2vh, 20px);
+        padding: 3vh 20px;
+        box-sizing: border-box;
+        background: linear-gradient(180deg, var(--surface), var(--surface-2));
+        border-right: 1px solid var(--line);
+    }
+
+    .menu-sidebar h1 {
+        font-size: clamp(20px, 2.2vw, 28px);
+        margin-bottom: 0;
+    }
+
+    .menu-sidebar .game-mode-selector {
+        flex-direction: column;
+        width: 100%;
+    }
+
+    .menu-sidebar .game-mode-btn {
+        flex-direction: row;
+        justify-content: center;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .menu-scroll-area {
+        flex: 1;
+        height: 100%;
+        min-width: 0;
+        align-items: stretch;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        align-content: start;
+        gap: 16px;
+        padding: 3vh clamp(16px, 3vw, 32px);
+    }
+
+    .menu-scroll-area .menu-section {
+        max-width: none;
+        margin: 0;
+    }
+
+    .menu-scroll-area .menu-settings {
+        grid-column: 1 / -1;
+        max-width: none;
+        padding: 16px 0 4px;
+    }
 }
 
 .menu-section {
@@ -1134,6 +1222,12 @@ body {
     width: 100%;
     height: 100%;
     background-color: var(--bg);
+    background-image:
+        radial-gradient(circle, rgba(255, 201, 60, 0.16), transparent 70%),
+        radial-gradient(circle, rgba(61, 184, 232, 0.18), transparent 70%);
+    background-position: -90px -90px, calc(100% + 110px) calc(100% + 110px);
+    background-size: 320px 320px, 340px 340px;
+    background-repeat: no-repeat, no-repeat;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1143,6 +1237,34 @@ body {
     padding: 4vmin;
     border-radius: var(--radius-xl);
     box-sizing: border-box;
+}
+
+.camera-permission-icon {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: clamp(84px, 15vmin, 116px);
+    height: clamp(84px, 15vmin, 116px);
+    margin-bottom: clamp(16px, 3vmin, 28px);
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--sky-500), var(--mint-500));
+    box-shadow: var(--shadow-lg);
+    color: white;
+}
+
+.camera-permission-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 2px solid var(--sky-300);
+    opacity: 0;
+    animation: pulseRing 2.4s ease-out infinite;
+    pointer-events: none;
+}
+
+.camera-permission-ring--delay {
+    animation-delay: 1.2s;
 }
 
 .camera-permission h2 {
@@ -1158,6 +1280,11 @@ body {
     margin-bottom: 30px;
     max-width: 80%;
     color: var(--text-soft);
+}
+
+@keyframes pulseRing {
+    0% { transform: scale(1); opacity: 0.55; }
+    100% { transform: scale(1.7); opacity: 0; }
 }
 
 .game-title {
@@ -1287,16 +1414,16 @@ body {
 }
 
 .letter-box {
-    width: calc(clamp(35px, 7vmin, 56px) * var(--letter-scale, 1));
-    height: calc(clamp(45px, 9vmin, 72px) * var(--letter-scale, 1));
-    margin: 0 calc(clamp(5px, 1vmin, 8px) * var(--letter-scale, 1));
+    width: calc(clamp(28px, 5.5vmin, 42px) * var(--letter-scale, 1));
+    height: calc(clamp(36px, 7vmin, 54px) * var(--letter-scale, 1));
+    margin: 0 calc(clamp(4px, 0.8vmin, 6px) * var(--letter-scale, 1));
     background-color: white;
-    border: clamp(2.5px, 0.5vmin, 4px) solid var(--sky-500);
+    border: clamp(2px, 0.4vmin, 3px) solid var(--sky-500);
     border-radius: var(--radius-sm);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: calc(clamp(25px, 5vmin, 40px) * var(--letter-scale, 1));
+    font-size: calc(clamp(18px, 3.8vmin, 30px) * var(--letter-scale, 1));
     font-weight: 700;
     font-family: var(--font-game);
     color: var(--ink);

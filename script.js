@@ -1880,8 +1880,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const lineWidth = isLowPower
             ? Math.max(minLine, Math.min(maxLine, handLen * 0.05))
             : Math.max(minLine, Math.min(maxLine, handLen * 0.34));
-        const outlineExtra = canvas.width * (isLowPower ? 0.001875 : 0.0075);
-        const jointRadiusRegular = isLowPower ? lineWidth * 1.4 : lineWidth * 0.5;
         const jointRadiusTip = isLowPower ? lineWidth * 2.2 : lineWidth * 0.62;
 
         const point = (i) => [landmarks[i].x * canvas.width, landmarks[i].y * canvas.height];
@@ -1890,9 +1888,9 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
 
-        // Batch every finger-bone segment into a single path, then stroke it just twice
-        // (dark outline, bright fill) instead of once per segment — dozens fewer draw
-        // calls per hand, which matters a lot on slower mobile GPUs.
+        // Batch every finger-bone segment into a single path and stroke it once — fill
+        // color only, no separate dark outline pass — one stroke call per hand instead
+        // of two, which matters a lot on slower mobile GPUs/CPUs.
         const segmentPath = new Path2D();
         for (const { start, end } of HandLandmarker.HAND_CONNECTIONS) {
             const [ax, ay] = point(start);
@@ -1900,32 +1898,20 @@ document.addEventListener('DOMContentLoaded', () => {
             segmentPath.moveTo(ax, ay);
             segmentPath.lineTo(bx, by);
         }
-        ctx.lineWidth = lineWidth + outlineExtra;
-        ctx.strokeStyle = colors.dark;
-        ctx.stroke(segmentPath);
         ctx.lineWidth = lineWidth;
         ctx.strokeStyle = colors.line;
         ctx.stroke(segmentPath);
 
-        // Same batching trick for the round joints — one fill for regular joints, one
-        // fill + one outline stroke for the (slightly bigger) fingertips.
-        const jointsPath = new Path2D();
+        // Only the 5 fingertips get a joint dot — every other landmark is just a line
+        // vertex, no circle — cutting the arc geometry down to a fifth of the original.
         const tipsPath = new Path2D();
-        landmarks.forEach((lm, i) => {
+        for (const i of HAND_FINGERTIP_INDICES) {
             const [x, y] = point(i);
-            const isTip = HAND_FINGERTIP_INDICES.has(i);
-            const r = isTip ? jointRadiusTip : jointRadiusRegular;
-            const path = isTip ? tipsPath : jointsPath;
-            path.moveTo(x + r, y);
-            path.arc(x, y, r, 0, Math.PI * 2);
-        });
-        ctx.fillStyle = colors.line;
-        ctx.fill(jointsPath);
+            tipsPath.moveTo(x + jointRadiusTip, y);
+            tipsPath.arc(x, y, jointRadiusTip, 0, Math.PI * 2);
+        }
         ctx.fillStyle = colors.tip;
         ctx.fill(tipsPath);
-        ctx.lineWidth = isLowPower ? Math.max(1, lineWidth * 0.6) : 3;
-        ctx.strokeStyle = colors.dark;
-        ctx.stroke(tipsPath);
 
         ctx.restore();
     };

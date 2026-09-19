@@ -75,19 +75,21 @@
             </div>
 
             <div class="level-selection-screen" id="level-selection-screen" style="display: none;">
-                <h1>PopAR Kit 2.0</h1>
+                <div class="menu-sidebar">
+                    <h1>PopAR Kit 2.0</h1>
 
-                <div class="game-mode-selector" id="game-mode-selector">
-                    <button class="game-mode-btn active" id="mode-point-and-pop-btn" type="button">
-                        <span class="game-mode-icon">🫧</span>
-                        <span class="game-mode-label">Point and Pop</span>
-                    </button>
-                    <button class="game-mode-btn" id="mode-stay-in-lane-btn" type="button">
-                        <span class="game-mode-icon">🚶</span>
-                        <span class="game-mode-label">Stay in Lane</span>
-                    </button>
+                    <div class="game-mode-selector" id="game-mode-selector">
+                        <button class="game-mode-btn active" id="mode-point-and-pop-btn" type="button">
+                            <span class="game-mode-icon">🫧</span>
+                            <span class="game-mode-label">Point and Pop</span>
+                        </button>
+                        <button class="game-mode-btn" id="mode-stay-in-lane-btn" type="button">
+                            <span class="game-mode-icon">🚶</span>
+                            <span class="game-mode-label">Stay in Lane</span>
+                        </button>
+                    </div>
+                    <p class="game-mode-hint" id="game-mode-hint">Pop the bubble with the missing letter!</p>
                 </div>
-                <p class="game-mode-hint" id="game-mode-hint">Pop the bubble with the missing letter!</p>
 
                 <div class="menu-scroll-area">
 
@@ -263,6 +265,14 @@
             </div>
 
             <div class="camera-permission" id="camera-permission">
+                <div class="camera-permission-icon">
+                    <span class="camera-permission-ring"></span>
+                    <span class="camera-permission-ring camera-permission-ring--delay"></span>
+                    <svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                        <circle cx="12" cy="13" r="4"/>
+                    </svg>
+                </div>
                 <h2>Camera Access Required</h2>
                 <p>This quiz needs access to your camera to track your hand movements. Please allow camera access when prompted.</p>
                 <button class="btn" id="camera-btn">Enable Camera</button>
