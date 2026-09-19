@@ -292,6 +292,104 @@ body {
     display: none;
 }
 
+/* --- Share modal --- */
+.share-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    padding: 20px;
+}
+
+.share-modal[hidden] {
+    display: none;
+}
+
+.share-modal-card {
+    position: relative;
+    width: 100%;
+    max-width: 360px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg);
+    padding: 28px 24px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+}
+
+.share-modal-card h2 {
+    font-family: var(--font-heading);
+    font-size: clamp(18px, 3vmin, 24px);
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 8px;
+}
+
+.share-modal-card p {
+    font-size: 14px;
+    color: var(--text-soft);
+    margin: 0 0 18px;
+}
+
+.share-modal-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: none;
+    background: var(--surface-2);
+    color: var(--text-soft);
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.share-modal-close:hover {
+    background: var(--coral-500);
+    color: white;
+}
+
+.share-qr {
+    width: 200px;
+    height: 200px;
+    border-radius: var(--radius-md);
+    background: var(--paper);
+    box-shadow: var(--shadow-md);
+    margin-bottom: 18px;
+}
+
+.share-link-row {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+}
+
+.share-link-row input {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-body);
+    padding: 10px 12px;
+    font-size: 13px;
+    border: 2px solid var(--line);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface-2);
+    color: var(--text);
+}
+
+.share-link-row .btn {
+    margin: 0;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
 /* --- Buttons --- */
 .btn {
     font-family: var(--font-heading);

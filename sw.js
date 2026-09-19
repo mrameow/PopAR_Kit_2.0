@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'popar-kit-cache-v50';
+const CACHE_NAME = 'popar-kit-cache-v52';
 const urlsToCache = [
   './',
   './index.html',
@@ -7,6 +7,7 @@ const urlsToCache = [
   './script.js',
   './words.json',
   './manifest.json',
+  './qr-code.png',
   './icon/hello-icon-144.png',
   './icon/hello-icon-192.png',
   './icon/hello-icon-512.png',

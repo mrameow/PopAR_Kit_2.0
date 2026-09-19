@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // combinations — it can silently produce poor/erratic results instead of throwing,
     // so mobile devices skip it entirely and go straight to the CPU delegate.
     const IS_MOBILE_DEVICE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const SHARE_URL = 'https://mrameow.github.io/PopAR_Kit_2.0/';
     // Stay in Lane: a random one of these replaces the player's real face each game
     // (and again whenever tracking is regained after being lost).
     const ANIMAL_FACE_EMOJIS = ['🐱', '🐶', '🐰', '🐻', '🐼', '🦊', '🐯', '🦁', '🐨', '🐵', '🐸', '🐷'];
@@ -127,6 +128,11 @@ document.addEventListener('DOMContentLoaded', () => {
         installButton: document.getElementById('install-button'),
         fullscreenBtn: document.getElementById('fullscreen-btn'),
         updateBtn: document.getElementById('update-btn'),
+        shareBtn: document.getElementById('share-btn'),
+        shareModal: document.getElementById('share-modal'),
+        shareModalClose: document.getElementById('share-modal-close'),
+        shareLinkInput: document.getElementById('share-link-input'),
+        copyLinkBtn: document.getElementById('copy-link-btn'),
     };
 
     // --- 3. AUDIO ---
@@ -1777,12 +1783,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const { ctx, outputCanvas: canvas } = ui;
         const colors = state.handGloveColors[handIndex] || GLOVE_COLOR_PALETTE[0];
 
-        // Scale the glove's thickness to this hand's actual on-screen size.
+        // Scale the glove's thickness to this hand's actual on-screen size. Low-power
+        // mode swaps the chunky puffy glove for a thin skeleton with small joint dots —
+        // lighter to draw, while still keeping the per-hand color and finger movement.
+        const isLowPower = state.lowPowerMode;
         const wrist = landmarks[0], middleMcp = landmarks[9];
         const wx = wrist.x * canvas.width, wy = wrist.y * canvas.height;
         const mx = middleMcp.x * canvas.width, my = middleMcp.y * canvas.height;
         const handLen = Math.hypot(mx - wx, my - wy) || 1;
-        const lineWidth = Math.max(10, Math.min(26, handLen * 0.34));
+        const lineWidth = isLowPower
+            ? Math.max(2, Math.min(4, handLen * 0.05))
+            : Math.max(10, Math.min(26, handLen * 0.34));
+        const outlineExtra = isLowPower ? 1.5 : 6;
+        const jointRadiusRegular = isLowPower ? lineWidth * 1.4 : lineWidth * 0.5;
+        const jointRadiusTip = isLowPower ? lineWidth * 2.2 : lineWidth * 0.62;
 
         const point = (i) => [landmarks[i].x * canvas.width, landmarks[i].y * canvas.height];
 
@@ -1800,7 +1814,7 @@ document.addEventListener('DOMContentLoaded', () => {
             segmentPath.moveTo(ax, ay);
             segmentPath.lineTo(bx, by);
         }
-        ctx.lineWidth = lineWidth + 6;
+        ctx.lineWidth = lineWidth + outlineExtra;
         ctx.strokeStyle = colors.dark;
         ctx.stroke(segmentPath);
         ctx.lineWidth = lineWidth;
@@ -1814,7 +1828,7 @@ document.addEventListener('DOMContentLoaded', () => {
         landmarks.forEach((lm, i) => {
             const [x, y] = point(i);
             const isTip = HAND_FINGERTIP_INDICES.has(i);
-            const r = isTip ? lineWidth * 0.62 : lineWidth * 0.5;
+            const r = isTip ? jointRadiusTip : jointRadiusRegular;
             const path = isTip ? tipsPath : jointsPath;
             path.moveTo(x + r, y);
             path.arc(x, y, r, 0, Math.PI * 2);
@@ -1823,7 +1837,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fill(jointsPath);
         ctx.fillStyle = colors.tip;
         ctx.fill(tipsPath);
-        ctx.lineWidth = 3;
+        ctx.lineWidth = isLowPower ? Math.max(1, lineWidth * 0.6) : 3;
         ctx.strokeStyle = colors.dark;
         ctx.stroke(tipsPath);
 
@@ -2668,6 +2682,38 @@ document.addEventListener('DOMContentLoaded', () => {
             } finally {
                 location.reload();
             }
+        });
+
+        // Share: copy the live link or show a QR code so this app is easy to hand off
+        // to another device (a smartboard, a colleague's laptop, a student's phone).
+        ui.shareBtn.addEventListener('click', () => {
+            ui.shareLinkInput.value = SHARE_URL;
+            ui.shareModal.hidden = false;
+        });
+
+        const closeShareModal = () => {
+            ui.shareModal.hidden = true;
+            ui.copyLinkBtn.textContent = 'Copy Link';
+        };
+        ui.shareModalClose.addEventListener('click', closeShareModal);
+        ui.shareModal.addEventListener('click', (e) => {
+            if (e.target === ui.shareModal) closeShareModal();
+        });
+
+        ui.copyLinkBtn.addEventListener('click', async () => {
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(SHARE_URL);
+                } else {
+                    ui.shareLinkInput.select();
+                    document.execCommand('copy');
+                }
+                ui.copyLinkBtn.textContent = 'Copied! ✓';
+            } catch (e) {
+                console.warn('Could not copy the share link:', e);
+                ui.shareLinkInput.select();
+            }
+            setTimeout(() => { ui.copyLinkBtn.textContent = 'Copy Link'; }, 1800);
         });
 
         setupEventListeners();
